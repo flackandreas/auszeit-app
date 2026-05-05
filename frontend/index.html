@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#121212" />
+    <link rel="manifest" href="/manifest.json" />
+    <title>Auszeit</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <div id="app">
+      <!-- Benachrichtigungs-Layer -->
+      <div id="notification-layer" class="hidden">
+        <div class="notification-card">
+          <div class="pulse-ring"></div>
+          <h2>Schüler auf dem Weg!</h2>
+          <p id="notification-text">Kollege X schickt Schüler Y zu dir.</p>
+          <button id="btn-confirm-arrival" class="btn btn-primary btn-large">Schüler ist angekommen</button>
+        </div>
+      </div>
+
+      <!-- Login View -->
+      <section id="login-view" class="view active-view">
+        <div class="glass-card login-card">
+          <h1 class="brand-title">Auszeit</h1>
+          <p class="subtitle">Kollegenhilfe App</p>
+          
+          <div class="input-group">
+            <label for="teacher-name">Dein Name / Kürzel</label>
+            <input type="text" id="teacher-name" placeholder="z.B. Hr. Müller" required>
+          </div>
+          
+          <div class="input-group">
+            <label for="teacher-room">Aktueller Raum</label>
+            <input type="text" id="teacher-room" placeholder="z.B. 104" required>
+          </div>
+          
+          <button id="btn-login" class="btn btn-primary">Starten</button>
+        </div>
+      </section>
+
+      <!-- Dashboard View -->
+      <section id="dashboard-view" class="view">
+        <header class="app-header">
+          <div class="user-info">
+            <span id="display-name" class="font-bold"></span>
+            <span id="display-room" class="badge"></span>
+          </div>
+          <button id="btn-logout" class="icon-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+          </button>
+        </header>
+
+        <main class="dashboard-content">
+          <div class="status-card glass-card">
+            <h2>Mein Status</h2>
+            <p>Bist du bereit, Schüler aufzunehmen?</p>
+            
+            <label class="toggle-switch">
+              <input type="checkbox" id="status-toggle">
+              <span class="slider round"></span>
+            </label>
+            <div id="status-text" class="status-text text-red">Keine Aufnahme</div>
+
+            <div id="capacity-selector" class="capacity-selector hidden">
+              <p>Wie viele Schüler?</p>
+              <div class="capacity-buttons">
+                <button class="cap-btn" data-cap="1">1</button>
+                <button class="cap-btn" data-cap="2">2</button>
+                <button class="cap-btn" data-cap="3">3+</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Aktuelle Vorfälle -->
+          <div id="incidents-container" class="incidents-container hidden">
+            <h3>Meine Auszeiten</h3>
+            <div id="incidents-list" class="incidents-list">
+              <!-- Dynamically filled via JS -->
+            </div>
+          </div>
+
+          <div class="emergency-action mt-auto">
+            <button id="btn-emergency" class="btn btn-danger btn-huge pulse-danger">
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+              Schüler verweisen
+            </button>
+          </div>
+        </main>
+      </section>
+
+      <!-- Emergency / Send Student View -->
+      <section id="emergency-view" class="view">
+        <header class="app-header">
+          <button id="btn-back-dashboard" class="icon-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+          </button>
+          <h2>Auszeit anfordern</h2>
+          <div style="width:24px"></div>
+        </header>
+
+        <main class="emergency-content">
+          <div class="input-group">
+            <label for="student-name">Name des Schülers (optional)</label>
+            <input type="text" id="student-name" placeholder="z.B. Max Mustermann">
+          </div>
+
+          <h3 class="mt-4">Verfügbare Kollegen:</h3>
+          <div id="available-teachers-list" class="teachers-list">
+            <!-- Dynamically populated via JS -->
+            <div class="empty-state">Suche verfügbare Kollegen...</div>
+          </div>
+        </main>
+      </section>
+
+    </div>
+    
+    <!-- Status Toast -->
+    <div id="toast" class="toast">Aktion erfolgreich</div>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>
