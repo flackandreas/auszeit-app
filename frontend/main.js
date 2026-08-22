@@ -1,7 +1,10 @@
 import { io } from 'socket.io-client';
 
 // Konstanten & DOM Elemente
-const socket = io('http://localhost:4000'); // Im Prod-Einsatz auf echte URL ändern
+// Ohne Argument verbindet sich Socket.IO mit der Herkunft, von der die Seite
+// geladen wurde. Damit entfaellt die fest verdrahtete Adresse, die im
+// Produktivbetrieb auf den Rechner der Besucherin zeigte.
+const socket = io();
 
 // Views
 const loginView = document.getElementById('login-view');

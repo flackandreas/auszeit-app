@@ -3,9 +3,17 @@ const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 
+const path = require('path');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Das gebaute Frontend wird vom selben Server ausgeliefert wie die
+// Socket-Verbindung. Dadurch braucht der Client keine feste Backend-Adresse
+// und die App laeuft lokal, im Container und hinter einem Reverse Proxy
+// gleichermassen. express.static liefert index.html fuer "/" automatisch aus.
+app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
 
 const server = http.createServer(app);
 const io = new Server(server, {

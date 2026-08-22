@@ -1,0 +1,10 @@
+services:
+  auszeit:
+    build: .
+    container_name: auszeit_app
+    ports:
+      - "4000:4000"
+    environment:
+      TZ: Europe/Berlin
+      PORT: 4000
+    restart: unless-stopped
