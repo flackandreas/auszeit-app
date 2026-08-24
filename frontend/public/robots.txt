@@ -1,0 +1,6 @@
+# Diese Demo-Instanz gehoert nicht in den Suchindex.
+# Sie enthaelt ausschliesslich erfundene Daten und wird naechtlich
+# zurueckgesetzt - indexierte Momentaufnahmen waeren wertlos und irrefuehrend.
+
+User-agent: *
+Disallow: /

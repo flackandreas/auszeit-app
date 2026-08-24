@@ -1,27 +1,44 @@
 :root {
-  --bg-color: #0f172a; /* Slate 900 */
-  --bg-secondary: #1e293b; /* Slate 800 */
-  --text-primary: #f8fafc; /* Slate 50 */
-  --text-secondary: #94a3b8; /* Slate 400 */
-  
-  --primary: #10b981; /* Emerald 500 */
-  --primary-hover: #059669; /* Emerald 600 */
-  --primary-glow: rgba(16, 185, 129, 0.4);
-  
-  --danger: #ef4444; /* Red 500 */
-  --danger-hover: #dc2626; /* Red 600 */
-  --danger-glow: rgba(239, 68, 68, 0.4);
-  
-  --glass-bg: rgba(30, 41, 59, 0.7);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-  
-  --radius-lg: 16px;
+  /* -----------------------------------------------------------------
+     Angeglichen an das Erscheinungsbild von schulos.de.
+
+     Die App war dunkel gestaltet (Slate 900 auf Emerald). Fundament,
+     Flaechen und Textfarben kommen jetzt von der Verkaufsseite, als Akzent
+     dient Bernstein - die Farbe, die das Modul "Auszeit-Betreuung" auf der
+     Produktseite traegt.
+
+     Das hellere #d97706 kommt mit weisser Schrift nur auf 3,19:1. Fuer
+     Schaltflaechen gilt deshalb die dunklere Variante #b45309 mit 5,02:1.
+     ----------------------------------------------------------------- */
+
+  --bg-color: #f0fdf4;
+  --bg-secondary: #e4f2ea;
+  --text-primary: #062f22;
+  --text-secondary: #4a7565;
+
+  --primary: #b45309;
+  --primary-hover: #92400e;
+  --primary-glow: rgba(180, 83, 9, 0.22);
+  --akzent-hell: #fef3e2;
+
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --danger-glow: rgba(220, 38, 38, 0.22);
+
+  --glass-bg: rgba(255, 255, 255, 0.82);
+  --glass-border: rgba(0, 153, 100, 0.12);
+  --glass-shadow: 0 8px 32px 0 rgba(0, 75, 49, 0.10);
+
+  --radius-lg: 20px;
   --radius-md: 12px;
-  --radius-sm: 8px;
-  
+  --radius-sm: 6px;
+
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Outfit Variable', 'Outfit', 'Inter', system-ui, sans-serif;
+
   --transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
+
 
 * {
   box-sizing: border-box;
@@ -31,17 +48,26 @@
 }
 
 body {
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   background-color: var(--bg-color);
   color: var(--text-primary);
   min-height: 100vh;
   display: flex;
   justify-content: center;
   overflow: hidden; /* Prevent scrolling on root for PWA feel */
-  background-image: 
-    radial-gradient(circle at 15% 50%, rgba(16, 185, 129, 0.08), transparent 25%),
-    radial-gradient(circle at 85% 30%, rgba(239, 68, 68, 0.05), transparent 25%);
+
+  /* Wellenflaeche wie auf schulos.de, darueber zwei sehr flache Lichter in
+     Modul- und Warnfarbe. Vorher lagen hier zwei Verlaeufe in Emerald und
+     Rot - die Farben des alten dunklen Entwurfs. */
+  background-image:
+    radial-gradient(circle at 15% 50%, rgba(180, 83, 9, 0.07), transparent 25%),
+    radial-gradient(circle at 85% 30%, rgba(0, 153, 100, 0.06), transparent 25%),
+    url('/img/wellen.svg');
+  background-repeat: no-repeat, no-repeat, repeat-y;
+  background-size: auto, auto, 100% auto;
+  background-position: center, center, top center;
 }
+
 
 #app {
   width: 100%;
@@ -52,17 +78,43 @@ body {
   overflow: hidden;
   box-shadow: var(--glass-shadow);
   background-color: var(--bg-color);
+  background-image: url('/img/wellen.svg');
+  background-repeat: repeat-y;
+  background-size: 100% auto;
+  background-position: top center;
 }
 
 /* Typography */
-h1, h2, h3 { font-family: 'Outfit', sans-serif; }
-.brand-title {
-  font-size: 2.5rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, #10b981, #3b82f6);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  margin-bottom: 0.25rem;
+h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 700; letter-spacing: -0.02em; }
+
+/* Wortmarke - gleicher Aufbau wie in den uebrigen Modulen: Bildmarke,
+   darueber der Produktname, darunter das Modul. Vorher stand hier nur
+   "Auszeit" als Verlaufsschrift, ohne Bezug zur Produktfamilie. */
+.marke {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  color: var(--primary);
+  margin-bottom: 0.35rem;
+}
+.marke__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.15;
+}
+.marke__name {
+  font-family: var(--font-display);
+  font-size: 1.65rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+}
+.marke__modul {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--primary);
 }
 .subtitle {
   color: var(--text-secondary);
@@ -119,9 +171,9 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
   padding: 0.875rem 1rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
-  background: rgba(15, 23, 42, 0.6);
+  background: #ffffff;
   color: var(--text-primary);
-  font-family: 'Inter', sans-serif;
+  font-family: var(--font-sans);
   font-size: 1rem;
   transition: var(--transition);
 }
@@ -137,7 +189,7 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
   padding: 0.875rem 1.5rem;
   border-radius: var(--radius-md);
   border: none;
-  font-family: 'Outfit', sans-serif;
+  font-family: var(--font-display);
   font-weight: 700;
   font-size: 1rem;
   cursor: pointer;
@@ -155,7 +207,7 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
 }
 .btn-primary:hover {
   background-color: var(--primary-hover);
-  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5);
+  box-shadow: 0 6px 20px rgba(180, 83, 9, 0.35);
 }
 .btn-danger {
   background-color: var(--danger);
@@ -182,7 +234,7 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
   justify-content: center;
 }
 .icon-btn:hover, .icon-btn:active {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(0, 75, 49, 0.06);
   color: var(--text-primary);
 }
 
@@ -242,7 +294,7 @@ h1, h2, h3 { font-family: 'Outfit', sans-serif; }
   transition: .4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
 }
 .slider.round { border-radius: 40px; }
-.slider.round:before { border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+.slider.round:before { border-radius: 50%; box-shadow: 0 2px 4px rgba(0, 75, 49, 0.18); }
 input:checked + .slider {
   background-color: var(--primary);
   border-color: var(--primary);
@@ -262,7 +314,7 @@ input:checked + .slider:before { transform: translateX(36px); }
 .capacity-selector {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
-  border-top: 1px solid rgba(255,255,255,0.05);
+  border-top: 1px solid var(--glass-border);
   animation: slideDown 0.3s ease forwards;
 }
 .capacity-selector.hidden { display: none; }
@@ -288,7 +340,7 @@ input:checked + .slider:before { transform: translateX(36px); }
 .incidents-container {
   margin-top: 1.5rem;
   padding: 1rem;
-  background: rgba(15, 23, 42, 0.4);
+  background: rgba(0, 75, 49, 0.04);
   border-radius: var(--radius-md);
   border: 1px solid var(--glass-border);
   animation: slideDown 0.3s ease forwards;
@@ -330,12 +382,12 @@ input:checked + .slider:before { transform: translateX(36px); }
   font-weight: bold;
 }
 .status-badge {
-  background: rgba(255,255,255,0.1);
+  background: rgba(0, 75, 49, 0.06);
   padding: 2px 6px;
   border-radius: 4px;
 }
 .status-badge.arrived {
-  background: rgba(16, 185, 129, 0.2);
+  background: rgba(0, 153, 100, 0.14);
   color: var(--primary);
 }
 
@@ -349,8 +401,8 @@ input:checked + .slider:before { transform: translateX(36px); }
 }
 @keyframes pulse-danger-anim {
   0% { box-shadow: 0 0 0 0 var(--danger-glow); }
-  70% { box-shadow: 0 0 0 15px rgba(239, 68, 68, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  70% { box-shadow: 0 0 0 15px rgba(220, 38, 38, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
 }
 
 /* Teachers List */
@@ -378,13 +430,15 @@ input:checked + .slider:before { transform: translateX(36px); }
 .teacher-item .t-name { font-weight: 600; font-size: 1.1rem; }
 .teacher-item .t-room { color: var(--text-secondary); font-size: 0.875rem; }
 .teacher-item .t-cap {
-  background: rgba(16, 185, 129, 0.15);
-  color: var(--primary);
+  /* Der helle Bernsteinton kommt mit --primary nur auf 4,25:1 und liegt
+     damit unter der Schwelle fuer Kleintext. Deshalb der dunklere Ton. */
+  background: rgba(180, 83, 9, 0.12);
+  color: var(--primary-hover);
   padding: 0.25rem 0.5rem;
   border-radius: 8px;
   font-weight: 700;
   font-size: 0.875rem;
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border: 1px solid rgba(180, 83, 9, 0.28);
 }
 .empty-state {
   text-align: center;
@@ -397,7 +451,7 @@ input:checked + .slider:before { transform: translateX(36px); }
 #notification-layer {
   position: absolute;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(15, 23, 42, 0.9);
+  background: rgba(6, 47, 34, 0.55);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   z-index: 100;
@@ -434,12 +488,18 @@ input:checked + .slider:before { transform: translateX(36px); }
   animation: pulse-ring-anim 2s infinite;
 }
 .pulse-ring::after {
-  content: "⚠️"; font-size: 2rem;
+  /* Zeichnung statt Emoji: die Darstellung von "⚠️" haengt sonst vom
+     Betriebssystem ab und faellt aus dem uebrigen Symbolsatz heraus. */
+  content: "";
+  display: block;
+  width: 2rem; height: 2rem;
+  background: no-repeat center / contain
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z'/%3E%3Cline x1='12' y1='9' x2='12' y2='13'/%3E%3Cline x1='12' y1='17' x2='12.01' y2='17'/%3E%3C/svg%3E");
 }
 @keyframes pulse-ring-anim {
   0% { box-shadow: 0 0 0 0 var(--primary-glow); }
-  70% { box-shadow: 0 0 0 20px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  70% { box-shadow: 0 0 0 20px rgba(180, 83, 9, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(180, 83, 9, 0); }
 }
 
 /* Toast */
@@ -453,7 +513,7 @@ input:checked + .slider:before { transform: translateX(36px); }
   padding: 0.75rem 1.5rem;
   border-radius: 30px;
   font-weight: 600;
-  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+  box-shadow: 0 12px 32px rgba(0, 75, 49, 0.18);
   transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   z-index: 50;
   pointer-events: none;
@@ -473,3 +533,4 @@ input:checked + .slider:before { transform: translateX(36px); }
   from { opacity: 0; transform: scale(0.8); }
   to { opacity: 1; transform: scale(1); }
 }
+

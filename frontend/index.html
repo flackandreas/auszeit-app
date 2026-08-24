@@ -2,14 +2,12 @@
 <html lang="de">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#121212" />
+    <meta name="theme-color" content="#f0fdf4" />
     <link rel="manifest" href="/manifest.json" />
-    <title>Auszeit</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@500;700&display=swap" rel="stylesheet">
+    <title>Auszeit-Betreuung · SchulOS</title>
+    <link rel="stylesheet" href="/fonts.css">
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
@@ -27,8 +25,17 @@
       <!-- Login View -->
       <section id="login-view" class="view active-view">
         <div class="glass-card login-card">
-          <h1 class="brand-title">Auszeit</h1>
-          <p class="subtitle">Kollegenhilfe App</p>
+          <div class="marke">
+            <svg width="34" height="34" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+              <path d="M16 4L4 10L16 16L28 10L16 4Z" fill="currentColor"/>
+              <path d="M4 14.5V21.5L16 27.5L28 21.5V14.5L16 20.5L4 14.5Z" fill="currentColor" opacity="0.55"/>
+            </svg>
+            <span class="marke__text">
+              <span class="marke__name">SchulOS</span>
+              <span class="marke__modul">Auszeit-Betreuung</span>
+            </span>
+          </div>
+          <p class="subtitle">Kurzzeitige Betreuung zwischen Kolleginnen und Kollegen</p>
           
           <div class="input-group">
             <label for="teacher-name">Dein Name / Kürzel</label>
