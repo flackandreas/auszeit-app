@@ -143,6 +143,18 @@ h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 700; letter-spac
   transform: translateX(0);
 }
 
+/* Der Rahmen (#app) bleibt bildschirmhoch, gescrollt wird im Inhalt. Ohne
+   min-height: 0 schrumpft ein Flex-Element nicht unter seine Inhaltshoehe -
+   dann greift overflow nicht und laengere Listen werden abgeschnitten. */
+.dashboard-content,
+.emergency-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
 /* UI Elements: Glass Card */
 .glass-card {
   background: var(--glass-bg);
@@ -356,8 +368,6 @@ input:checked + .slider:before { transform: translateX(36px); }
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  max-height: 260px;
-  overflow-y: auto;
 }
 .incident-item {
   padding: 0.75rem;
@@ -452,6 +462,12 @@ input:checked + .slider:before { transform: translateX(36px); }
 .emergency-action {
   margin-top: auto;
   padding-top: 2rem;
+  /* Bleibt am unteren Rand stehen, waehrend die Liste darueber scrollt -
+     sonst muesste man an allen Vorfaellen vorbeiscrollen, um verweisen zu
+     koennen. Der Verlauf blendet den durchlaufenden Inhalt aus. */
+  position: sticky;
+  bottom: 0;
+  background: linear-gradient(to bottom, transparent, var(--bg-color) 45%);
 }
 .pulse-danger {
   animation: pulse-danger-anim 2s infinite;
@@ -467,8 +483,6 @@ input:checked + .slider:before { transform: translateX(36px); }
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  overflow-y: auto;
-  max-height: calc(100vh - 250px);
   padding-bottom: 2rem;
 }
 .teacher-item {
@@ -513,7 +527,8 @@ input:checked + .slider:before { transform: translateX(36px); }
   -webkit-backdrop-filter: blur(8px);
   z-index: 100;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  overflow-y: auto;
   justify-content: center;
   padding: 1.5rem;
   opacity: 1;
@@ -524,6 +539,7 @@ input:checked + .slider:before { transform: translateX(36px); }
   pointer-events: none;
 }
 .notification-card {
+  margin: auto 0;
   background: var(--bg-secondary);
   border: 2px solid var(--primary);
   border-radius: var(--radius-lg);
