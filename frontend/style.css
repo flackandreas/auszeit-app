@@ -356,7 +356,7 @@ input:checked + .slider:before { transform: translateX(36px); }
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  max-height: 150px;
+  max-height: 260px;
   overflow-y: auto;
 }
 .incident-item {
@@ -386,10 +386,67 @@ input:checked + .slider:before { transform: translateX(36px); }
   padding: 2px 6px;
   border-radius: 4px;
 }
-.status-badge.arrived {
-  background: rgba(0, 153, 100, 0.14);
+/* Zustaende eines Vorfalls. Der Rueckweg spiegelt den Hinweg: was unterwegs
+   ist, traegt den Akzent, was ruht oder erledigt ist, tritt zurueck. */
+.status-badge.unterwegs,
+.status-badge.rueckweg {
+  background: var(--akzent-hell);
   color: var(--primary);
+  font-weight: 600;
 }
+.status-badge.betreut {
+  background: rgba(0, 153, 100, 0.14);
+  color: #056d47;
+  font-weight: 600;
+}
+.status-badge.zurueck {
+  background: rgba(74, 117, 101, 0.12);
+  color: var(--text-secondary);
+}
+
+/* Schaltflaeche auf einer Vorfallskarte. Das Zurueckschicken ist nicht
+   dringend - es gehoert auf die Karte, nicht in ein Vollbild-Overlay. */
+.btn-klein {
+  width: auto;
+  align-self: flex-start;
+  margin-top: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background-color: var(--primary);
+}
+.btn-klein:hover { background-color: var(--primary-hover); }
+.btn-klein:disabled { opacity: 0.55; cursor: default; }
+
+.belegung {
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+/* Diese Datei kennt kein allgemeines .hidden - jedes Element bringt seine
+   eigene Regel mit. */
+.belegung.hidden { display: none; }
+
+/* Der Raum aendert sich jede Stunde. Laesst er sich nicht aendern, schickt die
+   Rueckmeldung den Schueler in den Raum von vor 45 Minuten. */
+.badge-knopf {
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.badge-knopf:hover { border-color: var(--primary); color: var(--primary); }
+.badge-knopf.hidden { display: none; }
+
+.raum-eingabe {
+  width: 6.5rem;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-color);
+}
+.raum-eingabe:focus { outline: none; border-color: var(--primary); }
+.raum-eingabe.hidden { display: none; }
 
 /* Emergency Action */
 .emergency-action {

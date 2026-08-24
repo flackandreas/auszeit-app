@@ -20,11 +20,13 @@ const btnLogin = document.getElementById('btn-login');
 // Dashboard Elements
 const displayName = document.getElementById('display-name');
 const displayRoom = document.getElementById('display-room');
+const raumEingabe = document.getElementById("raum-eingabe");
 const btnLogout = document.getElementById('btn-logout');
 const statusToggle = document.getElementById('status-toggle');
 const statusText = document.getElementById('status-text');
 const capacitySelector = document.getElementById('capacity-selector');
 const capBtns = document.querySelectorAll('.cap-btn');
+const belegungText = document.getElementById('belegung');
 const btnEmergency = document.getElementById('btn-emergency');
 
 // Emergency Elements
@@ -33,15 +35,42 @@ const inputStudentName = document.getElementById('student-name');
 const teachersList = document.getElementById('available-teachers-list');
 
 // Notification Elements
+const notificationTitle = document.getElementById('notification-title');
 const notificationText = document.getElementById('notification-text');
-const btnConfirmArrival = document.getElementById('btn-confirm-arrival');
+const btnNotificationAction = document.getElementById('btn-notification-action');
 const toast = document.getElementById('toast');
 
 // State
 let currentUser = null;
-let currentCapacity = 0;
+let meinePlaetze = 0;
 let availableTeachers = [];
-let activeIncidentId = null;
+let meineVorfaelle = [];
+let overlayQueue = [];
+
+// Zustaende eines Vorfalls. Der Hinweg und der Rueckweg sind derselbe
+// zweistufige Handschlag mit vertauschten Rollen; welche Seite handeln darf,
+// steht in "rolle". Ein weiterer Zustand ist damit eine Zeile, keine neue
+// Verzweigung im Rendern.
+const ZUSTAND = {
+  unterwegs: {
+    text: 'Auf dem Weg',
+    klasse: 'unterwegs'
+  },
+  betreut: {
+    text: 'In Betreuung',
+    klasse: 'betreut',
+    aktion: { rolle: 'empfaenger', label: 'Zurückschicken', event: 'send_back' }
+  },
+  auf_dem_rueckweg: {
+    text: 'Auf dem Rückweg',
+    klasse: 'rueckweg',
+    aktion: { rolle: 'sender', label: 'Ist zurück', event: 'confirm_return' }
+  },
+  zurueck: {
+    text: 'Zurück',
+    klasse: 'zurueck'
+  }
+};
 
 // --- Helper Functions ---
 function switchView(viewElement) {
@@ -55,42 +84,132 @@ function showToast(message) {
   setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
+// Namen kommen von anderen Lehrkraeften und landen in innerHTML.
+function escapeHtml(wert) {
+  return String(wert == null ? '' : wert).replace(/[&<>"']/g, z => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[z]
+  ));
+}
+
+// Stabile Kennung des Geraets. Sie ueberlebt Reconnects und das Schliessen des
+// Tabs - anders als die socket.id, an der die Vorfaelle frueher hingen.
+function meineKennung() {
+  let id = localStorage.getItem('auszeit_teacher_id');
+  if (!id) {
+    id = (crypto && typeof crypto.randomUUID === 'function')
+      ? crypto.randomUUID()
+      : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem('auszeit_teacher_id', id);
+  }
+  return id;
+}
+
+function schuelerName(incident) {
+  return incident.studentName || 'Ein Schüler';
+}
+
+// --- Overlay-Warteschlange ---
+// Frueher merkte sich der Client genau einen Vorfall. Kamen zwei Meldungen
+// kurz hintereinander, ueberschrieb die zweite die erste, und der erste
+// Vorfall liess sich nie mehr bestaetigen. Mit dem Rueckweg gibt es eine
+// zweite Sorte Meldung, die zusaetzlich kollidieren kann.
+function zeigeOverlay(eintrag) {
+  if (overlayQueue.some(e => e.incidentId === eintrag.incidentId)) return;
+  overlayQueue.push(eintrag);
+  if (overlayQueue.length === 1) naechstesOverlay();
+}
+
+function naechstesOverlay() {
+  const eintrag = overlayQueue[0];
+  if (!eintrag) {
+    notificationLayer.classList.add('hidden');
+    return;
+  }
+  notificationTitle.textContent = eintrag.titel;
+  notificationText.innerHTML = eintrag.text;
+  btnNotificationAction.textContent = eintrag.buttonLabel;
+  btnNotificationAction.disabled = false;
+  notificationLayer.classList.remove('hidden');
+
+  if (navigator.vibrate) navigator.vibrate(eintrag.vibration);
+}
+
+btnNotificationAction.addEventListener('click', () => {
+  const eintrag = overlayQueue.shift();
+  if (eintrag) socket.emit(eintrag.event, { incidentId: eintrag.incidentId });
+  naechstesOverlay();
+});
+
 // --- Socket.io Events ---
 socket.on('connect', () => {
   console.log('Connected to server');
-  // Auto-login wenn Session Storage existiert
-  const savedUser = sessionStorage.getItem('auszeit_user');
+  // Greift auch nach einem Reconnect: die Anmeldung stellt die Zuordnung
+  // Socket -> Lehrkraft wieder her, damit Meldungen ankommen.
+  const savedUser = localStorage.getItem('auszeit_user');
   if (savedUser) {
     const user = JSON.parse(savedUser);
     inputName.value = user.name;
     inputRoom.value = user.room;
-    btnLogin.click();
+    anmelden();
   }
 });
 
 socket.on('login_success', (user) => {
   currentUser = user;
-  sessionStorage.setItem('auszeit_user', JSON.stringify(user));
+  localStorage.setItem('auszeit_user', JSON.stringify({ name: user.name, room: user.room }));
   displayName.textContent = user.name;
   displayRoom.textContent = `Raum ${user.room}`;
-  switchView(dashboardView);
+  uebernehmeStatus(user);
+
+  // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
+  // gerade arbeitet.
+  if (loginView.classList.contains('active-view')) switchView(dashboardView);
 });
+
+// Der Server ist die Wahrheit ueber Aufnahmebereitschaft und Plaetze, nicht
+// der Schalter im Browser. Frueher lief beides auseinander, sobald der Server
+// die Kapazitaet selbst veraenderte.
+socket.on('status_updated', (user) => {
+  currentUser = { ...currentUser, ...user };
+  displayRoom.textContent = `Raum ${user.room}`;
+  uebernehmeStatus(user);
+});
+
+function uebernehmeStatus(user) {
+  meinePlaetze = user.plaetze || 0;
+  statusToggle.checked = Boolean(user.isAvailable);
+  capBtns.forEach(b => b.classList.toggle('selected', Number(b.dataset.cap) === meinePlaetze));
+  zeichneStatus();
+}
 
 socket.on('available_teachers', (teachers) => {
   // Filtere mich selbst heraus
-  availableTeachers = teachers.filter(t => t.id !== socket.id);
+  availableTeachers = teachers.filter(t => !currentUser || t.id !== currentUser.id);
   renderTeachersList();
 });
 
 socket.on('incoming_student', (incident) => {
-  activeIncidentId = incident.id;
-  notificationText.innerHTML = `<strong>${incident.senderName}</strong> schickt <strong>${incident.studentName || 'einen Schüler'}</strong> zu dir.`;
-  notificationLayer.classList.remove('hidden');
-  
-  // Optional: Vibrate if supported
-  if (navigator.vibrate) {
-    navigator.vibrate([200, 100, 200, 100, 500]);
-  }
+  zeigeOverlay({
+    titel: 'Schüler auf dem Weg!',
+    text: `<strong>${escapeHtml(incident.senderName)}</strong> schickt `
+      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir.`,
+    buttonLabel: 'Schüler ist angekommen',
+    event: 'confirm_arrival',
+    incidentId: incident.id,
+    vibration: [200, 100, 200, 100, 500]
+  });
+});
+
+socket.on('student_returning', (incident) => {
+  zeigeOverlay({
+    titel: 'Schüler kommt zurück',
+    text: `<strong>${escapeHtml(incident.receiverName)}</strong> schickt `
+      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir zurück.`,
+    buttonLabel: 'Ist wieder da',
+    event: 'confirm_return',
+    incidentId: incident.id,
+    vibration: [200, 100, 200]
+  });
 });
 
 socket.on('help_requested', (response) => {
@@ -104,139 +223,139 @@ socket.on('help_requested', (response) => {
 });
 
 socket.on('student_arrived', (incident) => {
-  showToast(`${incident.studentName || 'Schüler'} ist sicher bei ${incident.receiverName} angekommen.`);
+  showToast(`${schuelerName(incident)} ist sicher bei ${incident.receiverName} angekommen.`);
   if (navigator.vibrate) navigator.vibrate(200);
 });
 
+// Die aufnehmende Lehrkraft muss dem Schueler sagen koennen, wohin er geht -
+// und das ist der Raum, in dem die Kollegin *jetzt* unterrichtet.
+socket.on('send_back_ok', (incident) => {
+  const ziel = incident.senderRaum ? `, Raum ${incident.senderRaum}` : '';
+  showToast(`${schuelerName(incident)} geht zurück zu ${incident.senderName}${ziel}.`);
+});
+
+socket.on('return_confirmed', (incident) => {
+  showToast(`${schuelerName(incident)} ist wieder bei ${incident.senderName} angekommen.`);
+});
+
 socket.on('sync_incidents', (incidents) => {
+  meineVorfaelle = incidents;
+  renderVorfaelle();
+  zeichneStatus();
+  raeumeOverlayAuf();
+});
+
+// Ein Vorfall kann von der anderen Seite weitergedreht worden sein, waehrend
+// das Overlay noch offen stand - dann hat es sich erledigt.
+function raeumeOverlayAuf() {
+  const vorher = overlayQueue.length;
+  overlayQueue = overlayQueue.filter(eintrag => {
+    const vorfall = meineVorfaelle.find(i => i.id === eintrag.incidentId);
+    if (!vorfall) return true;
+    const erwartet = eintrag.event === 'confirm_arrival' ? 'unterwegs' : 'auf_dem_rueckweg';
+    return vorfall.status === erwartet;
+  });
+  if (overlayQueue.length !== vorher) naechstesOverlay();
+}
+
+// --- Rendern ---
+
+function renderVorfaelle() {
   const container = document.getElementById('incidents-container');
   const list = document.getElementById('incidents-list');
-  
-  if (incidents.length === 0) {
+
+  if (!currentUser || meineVorfaelle.length === 0) {
     container.classList.add('hidden');
     return;
   }
-  
+
   container.classList.remove('hidden');
   list.innerHTML = '';
-  
-  // Sortiere: Neueste zuerst
-  incidents.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-  
-  incidents.forEach(inc => {
-    const isSender = inc.senderId === socket.id;
-    const statusText = inc.status === 'arrived' ? 'Angekommen' : 'Auf dem Weg';
-    const statusClass = inc.status === 'arrived' ? 'arrived' : '';
-    
-    const timeString = new Date(inc.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    const student = inc.studentName || 'Ein Schüler';
-    
-    const el = document.createElement('div');
-    el.className = `incident-item ${isSender ? 'sent' : 'received'}`;
-    
-    if (isSender) {
-      el.innerHTML = `
-        <div class="incident-meta">
-          <span>An: ${inc.receiverName}</span>
-          <span>${timeString}</span>
-        </div>
-        <div><strong>${student}</strong></div>
-        <div class="incident-meta mt-1">
-          <span class="status-badge ${statusClass}">${statusText}</span>
-        </div>
-      `;
-    } else {
-      el.innerHTML = `
-        <div class="incident-meta">
-          <span>Von: ${inc.senderName}</span>
-          <span>${timeString}</span>
-        </div>
-        <div><strong>${student}</strong></div>
-        <div class="incident-meta mt-1">
-          <span class="status-badge ${statusClass}">${statusText}</span>
-        </div>
-      `;
-    }
-    list.appendChild(el);
+
+  // Laufende Vorfaelle zuerst, innerhalb der Gruppen die neuesten oben.
+  const sortiert = [...meineVorfaelle].sort((a, b) => {
+    const offenA = a.status === 'zurueck' ? 1 : 0;
+    const offenB = b.status === 'zurueck' ? 1 : 0;
+    if (offenA !== offenB) return offenA - offenB;
+    return new Date(b.timestamp) - new Date(a.timestamp);
   });
-});
 
-// --- UI Event Listeners ---
+  sortiert.forEach(inc => list.appendChild(vorfallKarte(inc)));
+}
 
-// Login
-btnLogin.addEventListener('click', () => {
-  const name = inputName.value.trim();
-  const room = inputRoom.value.trim();
-  if (name && room) {
-    socket.emit('login', { name, room });
-  } else {
-    showToast('Bitte Name und Raum eingeben.');
+function vorfallKarte(inc) {
+  const binSender = inc.senderId === currentUser.id;
+  const zustand = ZUSTAND[inc.status] || ZUSTAND.unterwegs;
+
+  const zeit = new Date(inc.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const gegenueberName = binSender ? inc.receiverName : inc.senderName;
+  const gegenueberRaum = binSender ? inc.receiverRaum : inc.senderRaum;
+  const richtung = binSender ? 'An' : 'Von';
+  const raum = gegenueberRaum ? ` · Raum ${escapeHtml(gegenueberRaum)}` : '';
+
+  const el = document.createElement('div');
+  el.className = `incident-item ${binSender ? 'sent' : 'received'}`;
+  el.innerHTML = `
+    <div class="incident-meta">
+      <span>${richtung}: ${escapeHtml(gegenueberName)}${raum}</span>
+      <span>${zeit}</span>
+    </div>
+    <div><strong>${escapeHtml(schuelerName(inc))}</strong></div>
+    <div class="incident-meta mt-1">
+      <span class="status-badge ${zustand.klasse}">${zustand.text}</span>
+    </div>
+  `;
+
+  // Handeln darf nur, wen der Zustand vorsieht - die sendende Seite bestaetigt
+  // die Rueckkehr, die aufnehmende schickt zurueck.
+  const aktion = zustand.aktion;
+  if (aktion && (aktion.rolle === 'sender') === binSender) {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-klein';
+    btn.textContent = aktion.label;
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      socket.emit(aktion.event, { incidentId: inc.id });
+    });
+    el.appendChild(btn);
   }
-});
 
-// Logout
-btnLogout.addEventListener('click', () => {
-  sessionStorage.removeItem('auszeit_user');
-  socket.disconnect();
-  socket.connect(); // Reconnect fresh
-  statusToggle.checked = false;
-  capacitySelector.classList.add('hidden');
-  statusText.textContent = 'Keine Aufnahme';
-  statusText.className = 'status-text text-red';
-  switchView(loginView);
-});
+  return el;
+}
 
-// Status Toggle
-statusToggle.addEventListener('change', (e) => {
-  if (e.target.checked) {
+function belegtePlaetze() {
+  if (!currentUser) return 0;
+  return meineVorfaelle.filter(i =>
+    i.receiverId === currentUser.id && (i.status === 'unterwegs' || i.status === 'betreut')
+  ).length;
+}
+
+// Zeigt Bereitschaft und Belegung zusammen an. Ohne das bleibt unklar, warum
+// man trotz gruenem Schalter nicht mehr in der Liste der anderen auftaucht.
+function zeichneStatus() {
+  const belegt = belegtePlaetze();
+
+  if (statusToggle.checked) {
     statusText.textContent = 'Bereit zur Aufnahme';
     statusText.className = 'status-text text-green';
     capacitySelector.classList.remove('hidden');
-    // Default 1 Platz
-    if (currentCapacity === 0) {
-      capBtns[0].click();
-    } else {
-      updateStatusOnServer();
-    }
   } else {
     statusText.textContent = 'Keine Aufnahme';
     statusText.className = 'status-text text-red';
     capacitySelector.classList.add('hidden');
-    currentCapacity = 0;
-    capBtns.forEach(b => b.classList.remove('selected'));
-    updateStatusOnServer();
   }
-});
 
-// Capacity Buttons
-capBtns.forEach(btn => {
-  btn.addEventListener('click', (e) => {
-    capBtns.forEach(b => b.classList.remove('selected'));
-    e.target.classList.add('selected');
-    currentCapacity = parseInt(e.target.getAttribute('data-cap'));
-    updateStatusOnServer();
-  });
-});
-
-function updateStatusOnServer() {
-  socket.emit('update_status', {
-    isAvailable: statusToggle.checked,
-    capacity: currentCapacity,
-    room: currentUser?.room
-  });
+  if (belegt > 0) {
+    const frei = Math.max(0, meinePlaetze - belegt);
+    belegungText.textContent = `${belegt} von ${meinePlaetze} Plätzen belegt`
+      + (statusToggle.checked && frei === 0 ? ' — aktuell kein freier Platz' : '');
+    belegungText.classList.remove('hidden');
+  } else {
+    belegungText.textContent = "";
+    belegungText.classList.add("hidden");
+  }
 }
 
-// Emergency Navigation
-btnEmergency.addEventListener('click', () => {
-  switchView(emergencyView);
-  // Optional: Auto-focus Name input, but on mobile it brings up keyboard and hides list
-});
-
-btnBackDashboard.addEventListener('click', () => {
-  switchView(dashboardView);
-});
-
-// Render Teachers List
 function renderTeachersList() {
   teachersList.innerHTML = '';
   if (availableTeachers.length === 0) {
@@ -249,30 +368,128 @@ function renderTeachersList() {
     el.className = 'teacher-item';
     el.innerHTML = `
       <div class="t-info">
-        <span class="t-name">${teacher.name}</span>
-        <span class="t-room">Raum ${teacher.room}</span>
+        <span class="t-name">${escapeHtml(teacher.name)}</span>
+        <span class="t-room">Raum ${escapeHtml(teacher.room)}</span>
       </div>
       <div class="t-cap">${teacher.capacity} Platz</div>
     `;
-    
+
     el.addEventListener('click', () => {
-      // Send Request
-      const studentName = inputStudentName.value.trim() || 'Ein Schüler';
       socket.emit('request_help', {
-        studentName: studentName,
+        studentName: inputStudentName.value.trim(),
         receiverId: teacher.id
       });
     });
-    
+
     teachersList.appendChild(el);
   });
 }
 
-// Confirm Arrival
-btnConfirmArrival.addEventListener('click', () => {
-  if (activeIncidentId) {
-    socket.emit('confirm_arrival', { incidentId: activeIncidentId });
-    notificationLayer.classList.add('hidden');
-    activeIncidentId = null;
+// --- UI Event Listeners ---
+
+function anmelden() {
+  const name = inputName.value.trim();
+  const room = inputRoom.value.trim();
+  if (name && room) {
+    socket.emit('login', { teacherId: meineKennung(), name, room });
+  } else {
+    showToast('Bitte Name und Raum eingeben.');
   }
+}
+
+btnLogin.addEventListener('click', anmelden);
+
+// Logout
+btnLogout.addEventListener('click', () => {
+  socket.emit('logout');
+  localStorage.removeItem('auszeit_user');
+  // Die Geraetekennung bleibt bewusst stehen: sie identifiziert das Geraet,
+  // nicht die Person, und wird bei der naechsten Anmeldung wiederverwendet.
+  currentUser = null;
+  meineVorfaelle = [];
+  meinePlaetze = 0;
+  overlayQueue = [];
+  notificationLayer.classList.add('hidden');
+  statusToggle.checked = false;
+  capBtns.forEach(b => b.classList.remove('selected'));
+  zeichneStatus();
+  renderVorfaelle();
+  switchView(loginView);
+});
+
+// Status Toggle
+statusToggle.addEventListener('change', () => {
+  if (statusToggle.checked && meinePlaetze === 0) {
+    // Voreinstellung: ein Platz.
+    capBtns[0].click();
+    return;
+  }
+  if (!statusToggle.checked) meinePlaetze = 0;
+  capBtns.forEach(b => b.classList.toggle('selected', Number(b.dataset.cap) === meinePlaetze));
+  zeichneStatus();
+  updateStatusOnServer();
+});
+
+// Capacity Buttons
+capBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    meinePlaetze = parseInt(btn.dataset.cap, 10);
+    capBtns.forEach(b => b.classList.toggle('selected', b === btn));
+    zeichneStatus();
+    updateStatusOnServer();
+  });
+});
+
+function updateStatusOnServer() {
+  socket.emit('update_status', {
+    isAvailable: statusToggle.checked,
+    capacity: meinePlaetze,
+    room: currentUser && currentUser.room
+  });
+}
+
+// --- Raumwechsel ---
+// Die Lehrkraft unterrichtet naechste Stunde woanders. Ohne diese Moeglichkeit
+// bliebe der Raum auf dem Stand der Anmeldung - und die Rueckmeldung schickte
+// den Schueler dorthin zurueck.
+displayRoom.addEventListener("click", () => {
+  if (!currentUser) return;
+  raumEingabe.value = currentUser.room || "";
+  displayRoom.classList.add("hidden");
+  raumEingabe.classList.remove("hidden");
+  raumEingabe.focus();
+  raumEingabe.select();
+});
+
+function raumBearbeitungBeenden() {
+  raumEingabe.classList.add("hidden");
+  displayRoom.classList.remove("hidden");
+}
+
+function raumUebernehmen() {
+  if (raumEingabe.classList.contains("hidden")) return;
+  const neu = raumEingabe.value.trim();
+  raumBearbeitungBeenden();
+  if (!neu || !currentUser || neu === currentUser.room) return;
+
+  currentUser.room = neu;
+  displayRoom.textContent = `Raum `;
+  localStorage.setItem("auszeit_user", JSON.stringify({ name: currentUser.name, room: neu }));
+  updateStatusOnServer();
+}
+
+raumEingabe.addEventListener("blur", raumUebernehmen);
+raumEingabe.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") raumUebernehmen();
+  if (e.key === "Escape") raumBearbeitungBeenden();
+});
+
+// Emergency Navigation
+btnEmergency.addEventListener('click', () => {
+  switchView(emergencyView);
+  // Optional: Auto-focus Name input, but on mobile it brings up keyboard and hides list
+});
+
+btnBackDashboard.addEventListener('click', () => {
+  switchView(dashboardView);
 });

@@ -7,7 +7,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 ## 🚀 Hauptfunktionen
 
 - **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an (Session wird lokal gespeichert).
-- **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben die maximale Anzahl freier Plätze an (1, 2 oder 3+).
+- **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3+). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
   - Optionaler Eintrag des Schülernamens.
@@ -16,9 +16,15 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
   - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration.
   - Per Klick ("Schüler ist angekommen") wird der Empfang bestätigt.
   - Die absendende Lehrkraft erhält sofort eine Bestätigung (Toast-Nachricht), dass der Schüler sicher angekommen ist.
-  - Die verfügbare Kapazität der aufnehmenden Lehrkraft verringert sich automatisch.
+  - Der Platz gilt bereits ab dem Absenden als belegt, damit nicht zwei Lehrkräfte gleichzeitig auf denselben freien Platz schicken.
+- **Rückkehr in die Klasse**:
+  - Die aufnehmende Lehrkraft schickt den Schüler per Klick auf der Vorfallskarte zurück ("Zurückschicken").
+  - Sie erfährt dabei den Raum, in dem die abgebende Lehrkraft **aktuell** unterrichtet — nach 45 Minuten ist das selten noch der Raum der Verweisung.
+  - Die abgebende Lehrkraft erhält ein Overlay ("Schüler kommt zurück") und bestätigt die Rückkehr ("Ist wieder da"). Damit ist der Vorfall geschlossen.
+  - Der belegte Platz wird beim Zurückschicken sofort wieder frei.
 - **Protokoll & Verlaufsübersicht ("Meine Auszeiten")**:
-  - Live-Liste aller gesendeten und empfangenen Auszeit-Vorfälle mit Status (`Auf dem Weg` / `Angekommen`) und Zeitstempel.
+  - Live-Liste aller gesendeten und empfangenen Auszeit-Vorfälle mit Status und Zeitstempel; laufende Vorfälle stehen oben.
+  - Zustände: `Auf dem Weg` → `In Betreuung` → `Auf dem Rückweg` → `Zurück`.
 
 ---
 
@@ -105,15 +111,44 @@ chmod +x start.sh
 
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
-| `login` | Client ➔ Server | Übermittelt Name und Raum der Lehrkraft. |
-| `login_success` | Server ➔ Client | Bestätigt erfolgreiche Anmeldung und gibt Benutzerdaten zurück. |
-| `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), Kapazität (`capacity`) und Raum. |
-| `available_teachers` | Server ➔ Clients | Sendet die Liste aller aktuell aufnahmebereiten Lehrkräfte an alle verbundenen Clients. |
-| `request_help` | Client ➔ Server | Startet Auszeit für einen Schüler an einen gewählten Kollegen. |
-| `incoming_student` | Server ➔ Receiver | Benachrichtigt die aufnehmende Lehrkraft über den Schüler auf dem Weg. |
-| `confirm_arrival` | Receiver ➔ Server | Aufnehmende Lehrkraft bestätigt das Eintreffen des Schülers. |
-| `student_arrived` | Server ➔ Sender | Benachrichtigt die absendende Lehrkraft über das Eintreffen. |
-| `sync_incidents` | Server ➔ Client | Synchronisiert die Liste aller relevanten Auszeit-Vorfälle des Nutzers. |
+| `login` | Client ➔ Server | Übermittelt stabile Gerätekennung, Name und Raum. Dient auch der Wiederanmeldung nach einem Reconnect. |
+| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (Raum, Aufnahmebereitschaft, angebotene Plätze). |
+| `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. |
+| `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
+| `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
+| `request_help` | Client ➔ Server | Startet eine Auszeit. Der Platz wird sofort belegt, nicht erst bei der Ankunft. |
+| `help_requested` | Server ➔ Sender | Rückmeldung, ob die Verweisung angenommen wurde. |
+| `incoming_student` | Server ➔ Empfänger | Benachrichtigt über den Schüler auf dem Weg. |
+| `confirm_arrival` | Empfänger ➔ Server | Bestätigt das Eintreffen; Vorfall geht auf `betreut`. |
+| `student_arrived` | Server ➔ Sender | Benachrichtigt über das Eintreffen. |
+| `send_back` | Empfänger ➔ Server | Schickt den Schüler zurück; Vorfall geht auf `auf_dem_rueckweg`, der Platz wird frei. |
+| `send_back_ok` | Server ➔ Empfänger | Quittung mit dem Raum, in dem die abgebende Lehrkraft **jetzt** unterrichtet. |
+| `student_returning` | Server ➔ Sender | Kündigt die Rückkehr des Schülers an. |
+| `confirm_return` | Sender ➔ Server | Bestätigt die Rückkehr; der Vorfall ist abgeschlossen (`zurueck`). |
+| `return_confirmed` | Server ➔ Empfänger | Meldet, dass der Schüler wieder angekommen ist. |
+| `logout` | Client ➔ Server | Meldet die Lehrkraft ab; laufende Vorfälle bleiben bestehen. |
+| `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume beider Seiten. |
+
+### Zustandsautomat eines Vorfalls
+
+Hin- und Rückweg sind derselbe zweistufige Handschlag mit vertauschten Rollen:
+Erst ist der Schüler unterwegs, dann bestätigt die Person, in deren Raum er
+eintrifft. Jeder Übergang ist idempotent — ein zweiter Klick dreht nichts weiter.
+
+```text
+[–] --request_help--> unterwegs --confirm_arrival--> betreut
+                                                        |
+                                           send_back    v
+                       zurueck <--confirm_return-- auf_dem_rueckweg
+```
+
+### Identität und Sitzung
+
+Lehrkräfte hängen an einer stabilen Kennung aus dem `localStorage`, nicht an der
+`socket.id`. Die wechselt bei jedem Reconnect — Bildschirmsperre, Tab im
+Hintergrund, WLAN-Wechsel beim Gang durchs Gebäude. Zwischen Verweisung und
+Rückkehr liegen 20 bis 45 Minuten, in denen genau das laufend passiert; an der
+`socket.id` wären die Vorfälle danach verwaist.
 
 ---
 
