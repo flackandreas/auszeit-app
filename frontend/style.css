@@ -414,12 +414,37 @@ input:checked + .slider:before { transform: translateX(36px); }
   color: var(--text-secondary);
 }
 
+/* Einseitig beendet: erledigt, aber ohne bestaetigte Rueckkehr - deshalb
+   sichtbar anders als "Zurueck". */
+.status-badge.abgebrochen {
+  background: rgba(74, 117, 101, 0.12);
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.status-badge.wunsch {
+  background: var(--akzent-hell);
+  color: var(--primary);
+  font-weight: 600;
+}
+.status-badge.offline {
+  background: rgba(220, 38, 38, 0.10);
+  color: var(--danger-hover);
+}
+
+/* Ein Vorfall kann zwei Schaltflaechen tragen - etwa Zurueckschicken und
+   den einseitigen Abschluss. */
+.incident-aktionen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
 /* Schaltflaeche auf einer Vorfallskarte. Das Zurueckschicken ist nicht
    dringend - es gehoert auf die Karte, nicht in ein Vollbild-Overlay. */
 .btn-klein {
   width: auto;
   align-self: flex-start;
-  margin-top: 0.5rem;
   padding: 0.4rem 0.9rem;
   font-size: 0.8125rem;
   font-weight: 600;
@@ -428,6 +453,13 @@ input:checked + .slider:before { transform: translateX(36px); }
 }
 .btn-klein:hover { background-color: var(--primary-hover); }
 .btn-klein:disabled { opacity: 0.55; cursor: default; }
+/* Der einseitige Abschluss ist der Notausgang, nicht der Normalfall. */
+.btn-still {
+  background-color: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--glass-border);
+}
+.btn-still:hover { background-color: var(--bg-secondary); color: var(--text-primary); }
 
 .belegung {
   margin-top: 0.75rem;

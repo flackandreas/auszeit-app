@@ -22,6 +22,17 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
   - Sie erfährt dabei den Raum, in dem die abgebende Lehrkraft **aktuell** unterrichtet — nach 45 Minuten ist das selten noch der Raum der Verweisung.
   - Die abgebende Lehrkraft erhält ein Overlay ("Schüler kommt zurück") und bestätigt die Rückkehr ("Ist wieder da"). Damit ist der Vorfall geschlossen.
   - Der belegte Platz wird beim Zurückschicken sofort wieder frei.
+- **Rückholwunsch**:
+  - Die abgebende Lehrkraft kann auf ihrer Karte "Zurückholen" antippen, etwa wenn die Stunde endet.
+  - Das ist bewusst nur ein Wunsch und kein Zustandswechsel: Wann das Kind den Raum verlässt, entscheidet weiterhin die aufnehmende Lehrkraft, die es vor sich hat.
+  - Ist die Gegenseite nicht erreichbar, wird die Schaltfläche nicht angeboten — der Wunsch käme nie an.
+- **Einseitiger Abschluss**:
+  - Ist die Gegenseite offline, lässt sich ein hängengebliebener Vorfall einseitig beenden. Er endet als `Einseitig beendet`, nicht als `Zurück` — niemand hat die Rückkehr bestätigt.
+  - Solange die Gegenseite erreichbar ist, wird das abgelehnt: Sonst beendete man ihr einen laufenden Vorgang unter den Händen.
+  - Ein belegter Platz wird dabei frei.
+- **Datensparsamkeit**:
+  - Der Schülername wird aus beendeten Vorfällen gelöscht (Vorgabe: nach 2 Stunden); Zeitpunkt und beteiligte Lehrkräfte bleiben als Protokoll stehen.
+  - Beendete Vorfälle fallen später ganz aus dem Speicher (Vorgabe: nach 12 Stunden), nie geschlossene nach 24 Stunden.
 - **Protokoll & Verlaufsübersicht ("Meine Auszeiten")**:
   - Live-Liste aller gesendeten und empfangenen Auszeit-Vorfälle mit Status und Zeitstempel; laufende Vorfälle stehen oben.
   - Zustände: `Auf dem Weg` → `In Betreuung` → `Auf dem Rückweg` → `Zurück`.
@@ -126,8 +137,11 @@ chmod +x start.sh
 | `student_returning` | Server ➔ Sender | Kündigt die Rückkehr des Schülers an. |
 | `confirm_return` | Sender ➔ Server | Bestätigt die Rückkehr; der Vorfall ist abgeschlossen (`zurueck`). |
 | `return_confirmed` | Server ➔ Empfänger | Meldet, dass der Schüler wieder angekommen ist. |
+| `request_return` | Sender ➔ Server | Meldet den Wunsch, den Schüler zurückzubekommen. Ändert den Zustand nicht. |
+| `return_requested` | Server ➔ Empfänger | Zeigt den Rückholwunsch an. |
+| `close_incident` | Client ➔ Server | Einseitiger Abschluss; nur zulässig, solange die Gegenseite offline ist. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab; laufende Vorfälle bleiben bestehen. |
-| `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume beider Seiten. |
+| `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume und die Erreichbarkeit beider Seiten. |
 
 ### Zustandsautomat eines Vorfalls
 
@@ -142,7 +156,27 @@ eintrifft. Jeder Übergang ist idempotent — ein zweiter Klick dreht nichts wei
                        zurueck <--confirm_return-- auf_dem_rueckweg
 ```
 
+Daneben steht `abgebrochen`: der einseitige Abschluss, aus jedem offenen Zustand
+heraus erreichbar, sobald die Gegenseite offline ist. Bewusst ein eigener
+Endzustand — `zurueck` würde behaupten, die Rückkehr sei bestätigt worden.
+
+`request_return` setzt nur das Kennzeichen `rueckholwunsch` am Vorfall und
+verändert den Zustand nicht.
+
+### Aufbewahrung konfigurieren
+
+Aufbewahrungsfristen sind eine Schulentscheidung, keine Programmierentscheidung.
+Alle Werte in Millisekunden, als Umgebungsvariablen des Containers:
+
+| Variable | Vorgabe | Bedeutung |
+| :--- | :--- | :--- |
+| `AUSZEIT_NAME_TTL_MS` | 2 h | Wann der Schülername aus einem beendeten Vorfall gelöscht wird |
+| `AUSZEIT_VORFALL_TTL_MS` | 12 h | Wann ein beendeter Vorfall ganz entfernt wird |
+| `AUSZEIT_MAX_ALTER_MS` | 24 h | Höchstalter für nie geschlossene Vorfälle |
+| `AUSZEIT_AUFRAEUM_MS` | 30 min | Abstand zwischen zwei Aufräumläufen |
+
 ### Identität und Sitzung
+
 
 Lehrkräfte hängen an einer stabilen Kennung aus dem `localStorage`, nicht an der
 `socket.id`. Die wechselt bei jedem Reconnect — Bildschirmsperre, Tab im

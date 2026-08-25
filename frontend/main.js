@@ -59,18 +59,42 @@ const ZUSTAND = {
   betreut: {
     text: 'In Betreuung',
     klasse: 'betreut',
-    aktion: { rolle: 'empfaenger', label: 'Zurückschicken', event: 'send_back' }
+    aktionen: [
+      { rolle: 'empfaenger', label: 'Zurückschicken', event: 'send_back' },
+      // Nur ein Wunsch: wann das Kind geht, entscheidet die aufnehmende Seite.
+      // Ist sie nicht erreichbar, kaeme der Wunsch nie an - dann bleibt nur
+      // der einseitige Abschluss, der ohnehin danebensteht.
+      { rolle: 'sender', label: 'Zurückholen', event: 'request_return',
+        nurWenn: inc => !inc.rueckholwunsch && inc.receiverOnline !== false }
+    ]
   },
   auf_dem_rueckweg: {
     text: 'Auf dem Rückweg',
     klasse: 'rueckweg',
-    aktion: { rolle: 'sender', label: 'Ist zurück', event: 'confirm_return' }
+    aktionen: [
+      { rolle: 'sender', label: 'Ist zurück', event: 'confirm_return' }
+    ]
   },
   zurueck: {
     text: 'Zurück',
     klasse: 'zurueck'
+  },
+  abgebrochen: {
+    text: 'Einseitig beendet',
+    klasse: 'abgebrochen'
   }
 };
+
+// Endzustaende - danach ist am Vorfall nichts mehr zu tun.
+const ERLEDIGT = new Set(['zurueck', 'abgebrochen']);
+
+// Der einseitige Abschluss haengt nicht am Zustand, sondern daran, ob die
+// Gegenseite ueberhaupt noch reagieren kann. Deshalb steht er neben der
+// Tabelle statt in jedem Zustand wiederholt zu werden.
+function darfEinseitigSchliessen(inc, binSender) {
+  if (ERLEDIGT.has(inc.status)) return false;
+  return binSender ? inc.receiverOnline === false : inc.senderOnline === false;
+}
 
 // --- Helper Functions ---
 function switchView(viewElement) {
@@ -229,7 +253,15 @@ socket.on('student_arrived', (incident) => {
 
 // Die aufnehmende Lehrkraft muss dem Schueler sagen koennen, wohin er geht -
 // und das ist der Raum, in dem die Kollegin *jetzt* unterrichtet.
+// Kein Overlay: der Rueckholwunsch ist nicht dringend, und die aufnehmende
+// Lehrkraft steht im Unterricht. Die Karte traegt die Marke dauerhaft.
+socket.on('return_requested', (incident) => {
+  showToast(`${incident.senderName} möchte ${schuelerName(incident)} zurück.`);
+  if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
+});
+
 socket.on('send_back_ok', (incident) => {
+
   const ziel = incident.senderRaum ? `, Raum ${incident.senderRaum}` : '';
   showToast(`${schuelerName(incident)} geht zurück zu ${incident.senderName}${ziel}.`);
 });
@@ -274,8 +306,8 @@ function renderVorfaelle() {
 
   // Laufende Vorfaelle zuerst, innerhalb der Gruppen die neuesten oben.
   const sortiert = [...meineVorfaelle].sort((a, b) => {
-    const offenA = a.status === 'zurueck' ? 1 : 0;
-    const offenB = b.status === 'zurueck' ? 1 : 0;
+    const offenA = ERLEDIGT.has(a.status) ? 1 : 0;
+    const offenB = ERLEDIGT.has(b.status) ? 1 : 0;
     if (offenA !== offenB) return offenA - offenB;
     return new Date(b.timestamp) - new Date(a.timestamp);
   });
@@ -293,6 +325,19 @@ function vorfallKarte(inc) {
   const richtung = binSender ? 'An' : 'Von';
   const raum = gegenueberRaum ? ` · Raum ${escapeHtml(gegenueberRaum)}` : '';
 
+  // Der Rueckholwunsch ist bewusst nur eine Marke auf der Karte: die
+  // aufnehmende Lehrkraft unterrichtet gerade, ein Vollbild waere zu viel.
+  const wunschMarke = (inc.rueckholwunsch && inc.status === 'betreut')
+    ? `<span class="status-badge wunsch">${binSender ? 'Rückholung angefragt' : 'Soll zurückkommen'}</span>`
+    : '';
+
+  // Macht sichtbar, warum der einseitige Abschluss angeboten wird.
+  const gegenseiteOffline = binSender ? inc.receiverOnline === false : inc.senderOnline === false;
+  const offlineMarke = (gegenseiteOffline && !ERLEDIGT.has(inc.status))
+    ? '<span class="status-badge offline">nicht erreichbar</span>'
+    : '';
+
+
   const el = document.createElement('div');
   el.className = `incident-item ${binSender ? 'sent' : 'received'}`;
   el.innerHTML = `
@@ -303,21 +348,34 @@ function vorfallKarte(inc) {
     <div><strong>${escapeHtml(schuelerName(inc))}</strong></div>
     <div class="incident-meta mt-1">
       <span class="status-badge ${zustand.klasse}">${zustand.text}</span>
+      ${wunschMarke}${offlineMarke}
     </div>
   `;
 
   // Handeln darf nur, wen der Zustand vorsieht - die sendende Seite bestaetigt
   // die Rueckkehr, die aufnehmende schickt zurueck.
-  const aktion = zustand.aktion;
-  if (aktion && (aktion.rolle === 'sender') === binSender) {
-    const btn = document.createElement('button');
-    btn.className = 'btn btn-klein';
-    btn.textContent = aktion.label;
-    btn.addEventListener('click', () => {
-      btn.disabled = true;
-      socket.emit(aktion.event, { incidentId: inc.id });
+  const aktionen = (zustand.aktionen || []).filter(a =>
+    (a.rolle === 'sender') === binSender && (!a.nurWenn || a.nurWenn(inc))
+  );
+
+  if (darfEinseitigSchliessen(inc, binSender)) {
+    aktionen.push({ label: 'Einseitig abschließen', event: 'close_incident', still: true });
+  }
+
+  if (aktionen.length > 0) {
+    const leiste = document.createElement('div');
+    leiste.className = 'incident-aktionen';
+    aktionen.forEach(aktion => {
+      const btn = document.createElement('button');
+      btn.className = `btn btn-klein${aktion.still ? ' btn-still' : ''}`;
+      btn.textContent = aktion.label;
+      btn.addEventListener('click', () => {
+        leiste.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        socket.emit(aktion.event, { incidentId: inc.id });
+      });
+      leiste.appendChild(btn);
     });
-    el.appendChild(btn);
+    el.appendChild(leiste);
   }
 
   return el;
