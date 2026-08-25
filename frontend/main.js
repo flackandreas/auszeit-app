@@ -18,6 +18,7 @@ const inputRoom = document.getElementById('teacher-room');
 const btnLogin = document.getElementById('btn-login');
 const pinGruppe = document.getElementById('pin-gruppe');
 const inputPin = document.getElementById('schul-pin');
+const pinNotiz = document.getElementById('pin-notiz');
 
 // Dashboard Elements
 const displayName = document.getElementById('display-name');
@@ -189,9 +190,21 @@ function zeigeSchule(daten) {
 
 let pinNoetig = false;
 
-// Nur zeigen, wenn die Schule einen Code verlangt und keiner gemerkt ist.
+// Sichtbar, sobald die Schule einen Code verlangt - unabhaengig davon, ob
+// schon einer gemerkt ist. Frueher blieb das Feld bei gemerktem Code weg; wer
+// erfuhr, dass die Schule den Code gewechselt hat, fand dann keine Stelle, ihn
+// einzugeben, und musste erst absichtlich scheitern.
+//
+// Leer lassen benutzt weiterhin den gemerkten Code - der einmalige Ablauf
+// aendert sich also nicht. Wer sich automatisch anmeldet, sieht diese Maske
+// ohnehin nie.
 function zeigePinFeld() {
-  pinGruppe.classList.toggle('hidden', !(pinNoetig && !gemerkterPin()));
+  pinGruppe.classList.toggle('hidden', !pinNoetig);
+  if (!pinNoetig) return;
+
+  const gemerkt = Boolean(gemerkterPin());
+  inputPin.placeholder = gemerkt ? 'gespeichert – nur bei Änderung ausfüllen' : 'einmalig eingeben';
+  pinNotiz.classList.toggle('hidden', !gemerkt);
 }
 
 function zeigeSchulfehler(text) {
@@ -610,6 +623,7 @@ btnLogout.addEventListener('click', () => {
   notificationLayer.classList.add('hidden');
   statusToggle.checked = false;
   capBtns.forEach(b => b.classList.remove('selected'));
+  zeigePinFeld();
   zeichneStatus();
   renderVorfaelle();
   switchView(loginView);
