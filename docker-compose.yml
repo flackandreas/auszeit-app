@@ -7,4 +7,10 @@ services:
     environment:
       TZ: Europe/Berlin
       PORT: 4000
+      # Mandanten. Ohne Angabe laeuft die App als Einzelinstallation fuer eine
+      # Schule und verhaelt sich wie bisher. Werte kommen aus einer .env-Datei
+      # neben dieser Compose-Datei, damit echte Schulnamen nicht im Repo landen.
+      AUSZEIT_SCHULEN: ${AUSZEIT_SCHULEN:-}
+      AUSZEIT_STANDARD_SCHULE: ${AUSZEIT_STANDARD_SCHULE:-}
+      AUSZEIT_ORIGIN: ${AUSZEIT_ORIGIN:-}
     restart: unless-stopped

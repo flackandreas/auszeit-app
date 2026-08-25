@@ -1,27 +1,101 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
 
 const path = require('path');
 
 const app = express();
-app.use(cors());
 app.use(express.json());
+
+// --- Mandanten ---
+//
+// Ohne Trennung sieht jede Lehrkraft alle angemeldeten Lehrkraefte, auch die
+// fremder Schulen: verwirrende Listen, und ein Schueler laesst sich versehentlich
+// an eine fremde Schule schicken - erst dadurch traegt sein Name ueber die
+// Grenze. Der Mandant steckt in der Adresse (/s/<code>), damit die Anmeldung
+// ohne zusaetzliches Feld auskommt.
+//
+// Bewusst eine feste Liste statt Selbstbedienung: ein Tippfehler soll eine
+// klare Fehlermeldung geben und keinen stillen, leeren Mandanten, in dem man
+// allein sitzt und sich ueber die fehlenden Kollegen wundert.
+const STANDARD_SCHULE = 'standard';
+
+function ladeSchulen() {
+  const schulen = new Map();
+  try {
+    const roh = JSON.parse(process.env.AUSZEIT_SCHULEN || '{}');
+    for (const [code, wert] of Object.entries(roh)) {
+      const id = normalisiereSchulcode(code);
+      if (!id) continue;
+      schulen.set(id, {
+        name: String((wert && wert.name) || id).trim().slice(0, 80),
+        demo: Boolean(wert && wert.demo)
+      });
+    }
+  } catch (err) {
+    console.error('AUSZEIT_SCHULEN ist kein gueltiges JSON - starte im Einzelbetrieb.');
+  }
+  // Ohne Konfiguration bleibt es bei einem einzigen Mandanten. Eine Installation
+  // fuer nur eine Schule verhaelt sich dann genau wie bisher.
+  if (schulen.size === 0) schulen.set(STANDARD_SCHULE, { name: 'Auszeit-Betreuung', demo: false });
+  return schulen;
+}
+
+function normalisiereSchulcode(wert) {
+  if (typeof wert !== 'string') return null;
+  const code = wert.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9-]{1,31}$/.test(code) ? code : null;
+}
+
+const SCHULEN = ladeSchulen();
+const STANDARD_AUS_UMGEBUNG = normalisiereSchulcode(process.env.AUSZEIT_STANDARD_SCHULE);
+
+// Fehlt der Code und gibt es nur einen Mandanten, ist er gemeint. Ein
+// angegebener, aber unbekannter Code wird nie stillschweigend ersetzt.
+function schuleAufloesen(wunsch) {
+  const code = normalisiereSchulcode(wunsch);
+  if (code) return SCHULEN.has(code) ? code : null;
+  // Ohne Code greift der Standardmandant. Damit bleibt ein blanker Link
+  // (und jedes bestehende Lesezeichen) gueltig, auch wenn weitere Schulen
+  // eigene Adressen bekommen.
+  if (STANDARD_AUS_UMGEBUNG && SCHULEN.has(STANDARD_AUS_UMGEBUNG)) return STANDARD_AUS_UMGEBUNG;
+  return SCHULEN.size === 1 ? [...SCHULEN.keys()][0] : null;
+}
+
+// Erlaubt dem Client, Name und Betriebsart vor der Anmeldung zu erfragen -
+// ein falscher Link faellt so sofort auf, nicht erst nach dem Ausfuellen.
+app.get('/api/schule', (req, res) => {
+  const id = schuleAufloesen(req.query.code);
+  if (!id) return res.status(404).json({ fehler: 'unbekannte_schule' });
+  const schule = SCHULEN.get(id);
+  res.json({ id, name: schule.name, demo: schule.demo });
+});
 
 // Das gebaute Frontend wird vom selben Server ausgeliefert wie die
 // Socket-Verbindung. Dadurch braucht der Client keine feste Backend-Adresse
 // und die App laeuft lokal, im Container und hinter einem Reverse Proxy
 // gleichermassen. express.static liefert index.html fuer "/" automatisch aus.
-app.use(express.static(path.join(__dirname, '..', 'frontend', 'dist')));
+const DIST = path.join(__dirname, '..', 'frontend', 'dist');
+app.use(express.static(DIST));
+
+// Der Mandantenpfad liefert dieselbe Anwendung aus; den Code liest der Client
+// selbst aus der Adresse. Die Verweise auf /assets/... bleiben dabei gueltig.
+app.get('/s/:code', (req, res) => res.sendFile(path.join(DIST, 'index.html')));
+
 
 const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
+
+// Das Frontend kommt vom selben Server, CORS wird also im Normalbetrieb gar
+// nicht gebraucht - ohne Angabe laesst Socket.IO nur die gleiche Herkunft zu.
+// "*" hiess: jede beliebige Seite durfte sich verbinden. Fuer den getrennten
+// Vite-Dev-Server laesst sich die Herkunft ueber AUSZEIT_ORIGIN nachreichen
+// (kommagetrennt).
+const ERLAUBTE_HERKUNFT = (process.env.AUSZEIT_ORIGIN || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+const io = new Server(server, ERLAUBTE_HERKUNFT.length > 0
+  ? { cors: { origin: ERLAUBTE_HERKUNFT, methods: ['GET', 'POST'] } }
+  : {});
 
 // --- Datenhaltung (In-Memory) ---
 //
@@ -153,12 +227,18 @@ function gibPlatzFrei(incident) {
   return receiver.betreut.length !== vorher;
 }
 
-function broadcastAvailableTeachers() {
+// Sendet nur an den eigenen Mandanten. Das war die einzige Stelle, die
+// ueberhaupt global gesendet hat - alle uebrigen Meldungen gehen ohnehin
+// gezielt an eine einzelne Lehrkraft.
+function broadcastAvailableTeachers(schulId) {
+  if (!schulId) return;
   const available = [];
   for (const teacher of teachers.values()) {
-    if (istAufnahmebereit(teacher)) available.push(oeffentlich(teacher));
+    if (teacher.schulId === schulId && istAufnahmebereit(teacher)) {
+      available.push(oeffentlich(teacher));
+    }
   }
-  io.emit('available_teachers', available);
+  io.to(`schule:${schulId}`).emit('available_teachers', available);
 }
 
 // Alle Geraete derselben Lehrkraft liegen im Raum ihrer teacherId. io.to()
@@ -193,6 +273,14 @@ io.on('connection', (socket) => {
     const name = text(data && data.name, 60);
     if (!name) return;
 
+    // Unbekannter oder fehlender Mandant: keine Anmeldung. Sonst landete die
+    // Lehrkraft in einer fremden oder leeren Schule.
+    const schulId = schuleAufloesen(data && data.schulId);
+    if (!schulId) {
+      socket.emit('login_failed', { grund: 'unbekannte_schule' });
+      return;
+    }
+
     const teacherId = normalisiereId(data && data.teacherId) || socket.id;
     const room = text(data && data.room, 30);
 
@@ -201,6 +289,12 @@ io.on('connection', (socket) => {
       // Wiederanmeldung: Aufnahmebereitschaft, Belegung und laufende Vorfaelle
       // bleiben stehen. Der Server ist die Wahrheit, nicht der alte Schalter
       // im Browser.
+      // Eine Kennung gehoert dauerhaft zu einer Schule. Wer denselben Browser
+      // an einem fremden Link benutzt, bekommt dort eine eigene Kennung.
+      if (teacher.schulId !== schulId) {
+        socket.emit('login_failed', { grund: 'kennung_fremder_schule' });
+        return;
+      }
       teacher.name = name;
       teacher.room = room || teacher.room;
       teacher.online = true;
@@ -208,6 +302,7 @@ io.on('connection', (socket) => {
     } else {
       teacher = {
         id: teacherId,
+        schulId,
         name,
         room,
         isAvailable: false,
@@ -221,14 +316,19 @@ io.on('connection', (socket) => {
 
     socketToTeacher.set(socket.id, teacherId);
     socket.join(teacherId);
+    socket.join(`schule:${schulId}`);
 
+    const schule = SCHULEN.get(schulId);
     socket.emit('login_success', {
       ...oeffentlich(teacher),
       isAvailable: teacher.isAvailable,
-      plaetze: teacher.plaetze
+      plaetze: teacher.plaetze,
+      schulId,
+      schulName: schule.name,
+      demo: schule.demo
     });
 
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(teacher.schulId);
     syncUserIncidents(teacherId);
     syncGegenseiten(teacherId);
   });
@@ -250,7 +350,7 @@ io.on('connection', (socket) => {
       isAvailable: teacher.isAvailable,
       plaetze: teacher.plaetze
     });
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(teacher.schulId);
   });
 
   // Schueler zu einer Kollegin oder einem Kollegen schicken.
@@ -259,7 +359,12 @@ io.on('connection', (socket) => {
     if (!sender) return;
 
     const receiverId = normalisiereId(data && data.receiverId);
-    const receiver = receiverId ? teachers.get(receiverId) : undefined;
+    const kandidat = receiverId ? teachers.get(receiverId) : undefined;
+
+    // Nie ueber die Mandantengrenze - auch nicht mit erratener Kennung. Eine
+    // Lehrkraft einer fremden Schule gilt schlicht als nicht vorhanden; nach
+    // aussen ist das nicht zu unterscheiden und verraet ihre Existenz nicht.
+    const receiver = (kandidat && kandidat.schulId === sender.schulId) ? kandidat : undefined;
 
     if (!receiver || receiver.id === sender.id || !istAufnahmebereit(receiver)) {
       socket.emit('help_requested', { success: false, message: 'Kollege nicht mehr verfügbar.' });
@@ -268,6 +373,7 @@ io.on('connection', (socket) => {
 
     const incident = {
       id: `v${++vorfallZaehler}`,
+      schulId: sender.schulId,
       senderId: sender.id,
       senderName: sender.name,
       senderRaum: sender.room,
@@ -290,7 +396,7 @@ io.on('connection', (socket) => {
 
     syncUserIncidents(sender.id);
     syncUserIncidents(receiver.id);
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(sender.schulId);
   });
 
   // Aufnehmende Lehrkraft bestaetigt das Eintreffen.
@@ -331,7 +437,7 @@ io.on('connection', (socket) => {
 
     syncUserIncidents(incident.senderId);
     syncUserIncidents(teacher.id);
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(teacher.schulId);
   });
 
   // Sendende Lehrkraft bestaetigt die Rueckkehr - der Vorfall ist beendet.
@@ -391,7 +497,7 @@ io.on('connection', (socket) => {
 
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(teacher.schulId);
   });
 
   // Abmeldung: die Lehrkraft loest ihre Kennung, bleibt aber als Datensatz
@@ -408,7 +514,7 @@ io.on('connection', (socket) => {
       teacher.offlineSeit = Date.now();
       syncGegenseiten(teacher.id);
     }
-    broadcastAvailableTeachers();
+    broadcastAvailableTeachers(teacher.schulId);
   });
 
   socket.on('disconnect', () => {
@@ -425,7 +531,7 @@ io.on('connection', (socket) => {
       teacher.online = false;
       teacher.offlineSeit = Date.now();
       syncGegenseiten(teacherId);
-      broadcastAvailableTeachers();
+      broadcastAvailableTeachers(teacher.schulId);
     }
   });
 });
@@ -451,6 +557,7 @@ const OFFLINE_GNADENFRIST_MS = 12 * 60 * 60 * 1000;
 function raeumeVorfaelleAuf() {
   const jetzt = Date.now();
   const betroffen = new Set();
+  const schulen = new Set();
 
   for (let i = incidents.length - 1; i >= 0; i--) {
     const v = incidents[i];
@@ -463,7 +570,7 @@ function raeumeVorfaelleAuf() {
       && jetzt - beendet > VORFALL_LOESCHEN_NACH_MS;
 
     if (zuAlt || langeFertig) {
-      gibPlatzFrei(v);
+      if (gibPlatzFrei(v)) schulen.add(v.schulId);
       incidents.splice(i, 1);
       betroffen.add(v.senderId).add(v.receiverId);
       continue;
@@ -475,7 +582,7 @@ function raeumeVorfaelleAuf() {
       betroffen.add(v.senderId).add(v.receiverId);
     }
   }
-  return betroffen;
+  return { betroffen, schulen };
 }
 
 const aufraeumer = setInterval(() => {
@@ -483,7 +590,7 @@ const aufraeumer = setInterval(() => {
 
   // Erst die Vorfaelle: der Lehrkraft-Durchlauf darunter prueft, ob noch ein
   // offener Vorfall an ihr haengt.
-  const betroffen = raeumeVorfaelleAuf();
+  const { betroffen, schulen } = raeumeVorfaelleAuf();
 
   for (const [id, teacher] of teachers) {
     if (teacher.online || teacher.betreut.length > 0) continue;
@@ -492,11 +599,15 @@ const aufraeumer = setInterval(() => {
     const hatOffenenVorfall = incidents.some(
       i => (i.senderId === id || i.receiverId === id) && !ABGESCHLOSSEN.has(i.status)
     );
-    if (!hatOffenenVorfall) teachers.delete(id);
+    if (!hatOffenenVorfall) {
+      schulen.add(teacher.schulId);
+      teachers.delete(id);
+    }
   }
 
   for (const id of betroffen) syncUserIncidents(id);
-  if (betroffen.size > 0) broadcastAvailableTeachers();
+  // Nur die Mandanten auffrischen, in denen sich wirklich etwas geaendert hat.
+  for (const schulId of schulen) broadcastAvailableTeachers(schulId);
 }, AUFRAEUM_INTERVALL_MS);
 if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
 

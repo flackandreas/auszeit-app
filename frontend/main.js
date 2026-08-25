@@ -33,6 +33,12 @@ const btnEmergency = document.getElementById('btn-emergency');
 const btnBackDashboard = document.getElementById('btn-back-dashboard');
 const inputStudentName = document.getElementById('student-name');
 const teachersList = document.getElementById('available-teachers-list');
+const demoHinweis = document.getElementById('demo-hinweis');
+
+// Mandanten-Anzeige
+const schulName = document.getElementById('schul-name');
+const schulFehler = document.getElementById('schul-fehler');
+const schulKennzeichen = document.getElementById('schul-kennzeichen');
 
 // Notification Elements
 const notificationTitle = document.getElementById('notification-title');
@@ -115,17 +121,82 @@ function escapeHtml(wert) {
   ));
 }
 
+// Der Mandant steckt in der Adresse: /s/<code>. Damit bleibt die Anmeldung
+// bei Name und Raum - kein zusaetzliches Feld.
+function schulcodeAusAdresse() {
+  const treffer = location.pathname.match(/^\/s\/([A-Za-z0-9-]{2,32})\/?$/);
+  return treffer ? treffer[1].toLowerCase() : '';
+}
+
+const SCHULCODE = schulcodeAusAdresse();
+
 // Stabile Kennung des Geraets. Sie ueberlebt Reconnects und das Schliessen des
 // Tabs - anders als die socket.id, an der die Vorfaelle frueher hingen.
+//
+// Der Schluessel haengt am Mandanten: wer denselben Browser am Link einer
+// anderen Schule benutzt, bekommt dort eine eigene Kennung. Sonst truege er
+// seine Kennung ueber die Grenze, und der Server wiese ihn ab.
+function kennungsSchluessel() {
+  return `auszeit_teacher_id${SCHULCODE ? ':' + SCHULCODE : ''}`;
+}
+
+function sitzungsSchluessel() {
+  return `auszeit_user${SCHULCODE ? ':' + SCHULCODE : ''}`;
+}
+
 function meineKennung() {
-  let id = localStorage.getItem('auszeit_teacher_id');
+  const schluessel = kennungsSchluessel();
+  let id = localStorage.getItem(schluessel);
   if (!id) {
     id = (crypto && typeof crypto.randomUUID === 'function')
       ? crypto.randomUUID()
       : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem('auszeit_teacher_id', id);
+    localStorage.setItem(schluessel, id);
   }
   return id;
+}
+
+// Falscher Link oder Kennung aus einer anderen Schule: klar sagen, statt die
+// Person raten zu lassen, warum keine Kollegen erscheinen.
+const ABWEISUNG = {
+  unbekannte_schule: 'Dieser Link gehört zu keiner eingerichteten Schule. Bitte den Link der eigenen Schule verwenden.',
+  kennung_fremder_schule: 'Dieses Gerät ist bereits bei einer anderen Schule angemeldet.'
+};
+
+function zeigeSchule(daten) {
+  if (!daten || !daten.schulName) return;
+  schulName.textContent = daten.schulName;
+  schulName.classList.remove('hidden');
+  schulKennzeichen.textContent = daten.schulName;
+  schulKennzeichen.classList.remove('hidden');
+  demoHinweis.classList.toggle('hidden', !daten.demo);
+}
+
+function zeigeSchulfehler(text) {
+  schulFehler.textContent = text;
+  schulFehler.classList.remove('hidden');
+  schulName.classList.add('hidden');
+  btnLogin.disabled = true;
+}
+
+// Vor der Anmeldung fragen, wozu dieser Link gehoert. Ein falscher Link soll
+// nicht erst nach dem Ausfuellen auffallen - und schon gar nicht als stille
+// leere Kollegenliste.
+async function schulePruefen() {
+  try {
+    const antwort = await fetch(`/api/schule${SCHULCODE ? '?code=' + encodeURIComponent(SCHULCODE) : ''}`);
+    if (!antwort.ok) {
+      zeigeSchulfehler(ABWEISUNG.unbekannte_schule);
+      return null;
+    }
+    const schule = await antwort.json();
+    zeigeSchule({ schulName: schule.name, demo: schule.demo });
+    return schule;
+  } catch (err) {
+    // Ohne Antwort nicht blockieren - die Socket-Anmeldung entscheidet dann.
+    console.warn('Schulangaben nicht abrufbar:', err);
+    return null;
+  }
 }
 
 function schuelerName(incident) {
@@ -164,12 +235,14 @@ btnNotificationAction.addEventListener('click', () => {
   naechstesOverlay();
 });
 
+schulePruefen();
+
 // --- Socket.io Events ---
 socket.on('connect', () => {
   console.log('Connected to server');
   // Greift auch nach einem Reconnect: die Anmeldung stellt die Zuordnung
   // Socket -> Lehrkraft wieder her, damit Meldungen ankommen.
-  const savedUser = localStorage.getItem('auszeit_user');
+  const savedUser = localStorage.getItem(sitzungsSchluessel());
   if (savedUser) {
     const user = JSON.parse(savedUser);
     inputName.value = user.name;
@@ -178,12 +251,21 @@ socket.on('connect', () => {
   }
 });
 
+socket.on('login_failed', (antwort) => {
+  zeigeSchulfehler(ABWEISUNG[antwort && antwort.grund] || 'Anmeldung nicht möglich.');
+  localStorage.removeItem(sitzungsSchluessel());
+  switchView(loginView);
+});
+
 socket.on('login_success', (user) => {
+  btnLogin.disabled = false;
+  schulFehler.classList.add('hidden');
   currentUser = user;
-  localStorage.setItem('auszeit_user', JSON.stringify({ name: user.name, room: user.room }));
+  localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: user.name, room: user.room }));
   displayName.textContent = user.name;
   displayRoom.textContent = `Raum ${user.room}`;
   uebernehmeStatus(user);
+  zeigeSchule(user);
 
   // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
   // gerade arbeitet.
@@ -449,7 +531,7 @@ function anmelden() {
   const name = inputName.value.trim();
   const room = inputRoom.value.trim();
   if (name && room) {
-    socket.emit('login', { teacherId: meineKennung(), name, room });
+    socket.emit('login', { teacherId: meineKennung(), schulId: SCHULCODE, name, room });
   } else {
     showToast('Bitte Name und Raum eingeben.');
   }
@@ -460,7 +542,7 @@ btnLogin.addEventListener('click', anmelden);
 // Logout
 btnLogout.addEventListener('click', () => {
   socket.emit('logout');
-  localStorage.removeItem('auszeit_user');
+  localStorage.removeItem(sitzungsSchluessel());
   // Die Geraetekennung bleibt bewusst stehen: sie identifiziert das Geraet,
   // nicht die Person, und wird bei der naechsten Anmeldung wiederverwendet.
   currentUser = null;
@@ -532,7 +614,7 @@ function raumUebernehmen() {
 
   currentUser.room = neu;
   displayRoom.textContent = `Raum `;
-  localStorage.setItem("auszeit_user", JSON.stringify({ name: currentUser.name, room: neu }));
+  localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: currentUser.name, room: neu }));
   updateStatusOnServer();
 }
 

@@ -163,6 +163,41 @@ Endzustand — `zurueck` würde behaupten, die Rückkehr sei bestätigt worden.
 `request_return` setzt nur das Kennzeichen `rueckholwunsch` am Vorfall und
 verändert den Zustand nicht.
 
+### Mandanten (mehrere Schulen auf einer Instanz)
+
+Ohne Konfiguration laeuft die App als Einzelinstallation fuer eine Schule und
+verhaelt sich wie bisher. Sollen mehrere Schulen dieselbe Instanz nutzen, ohne
+einander zu sehen, bekommt jede einen eigenen Link:
+
+```
+https://auszeit.example.de/s/rstn
+```
+
+Die Anmeldung bleibt dabei bei Name und Raum - der Mandant steckt in der
+Adresse, kein zusaetzliches Feld. Eingerichtet wird er ueber `AUSZEIT_SCHULEN`
+(JSON):
+
+```json
+{
+  "rstn": { "name": "RS Trittau-Nord" },
+  "demo": { "name": "Offene Demo", "demo": true }
+}
+```
+
+| Variable | Bedeutung |
+| :--- | :--- |
+| `AUSZEIT_SCHULEN` | Zulaessige Mandanten. Bewusst eine feste Liste: ein Tippfehler im Link soll eine klare Fehlermeldung geben und keinen stillen, leeren Mandanten. |
+| `AUSZEIT_STANDARD_SCHULE` | Mandant fuer Aufrufe ohne `/s/<code>`. Haelt bestehende Lesezeichen gueltig. |
+| `AUSZEIT_ORIGIN` | Erlaubte Herkunft fuer Socket-Verbindungen, kommagetrennt. Ohne Angabe nur die eigene - noetig nur beim getrennten Vite-Dev-Server. |
+
+`demo: true` blendet beim Schuelernamen den Hinweis ein, im Testbetrieb keine
+echten Namen einzugeben.
+
+Was die Trennung leistet: Die Liste der aufnahmebereiten Lehrkraefte geht nur
+noch an den eigenen Mandanten, und eine Verweisung ueber die Mandantengrenze
+wird abgewiesen - auch mit erratener Kennung. Eine Geraetekennung gehoert
+dauerhaft zu einer Schule.
+
 ### Aufbewahrung konfigurieren
 
 Aufbewahrungsfristen sind eine Schulentscheidung, keine Programmierentscheidung.

@@ -36,6 +36,11 @@
             </span>
           </div>
           <p class="subtitle">Kurzzeitige Betreuung zwischen Kolleginnen und Kollegen</p>
+
+          <!-- Zeigt vor dem Ausfuellen, zu welcher Schule dieser Link gehoert.
+               Ein falscher Link faellt so sofort auf. -->
+          <div id="schul-name" class="schul-name hidden"></div>
+          <div id="schul-fehler" class="schul-fehler hidden"></div>
           
           <div class="input-group">
             <label for="teacher-name">Dein Name / Kürzel</label>
@@ -55,11 +60,16 @@
       <section id="dashboard-view" class="view">
         <header class="app-header">
           <div class="user-info">
-            <span id="display-name" class="font-bold"></span>
-            <!-- Der Raum aendert sich jede Stunde; anklickbar, damit die Rueckmeldung
-                 nicht in den Raum von vor 45 Minuten schickt. -->
-            <button id="display-room" class="badge badge-knopf" title="Raum ändern"></button>
-            <input id="raum-eingabe" class="badge raum-eingabe hidden" type="text" maxlength="30" aria-label="Aktuellen Raum ändern">
+            <div class="user-info__zeile">
+              <span id="display-name" class="font-bold"></span>
+              <!-- Der Raum aendert sich jede Stunde; anklickbar, damit die Rueckmeldung
+                   nicht in den Raum von vor 45 Minuten schickt. -->
+              <button id="display-room" class="badge badge-knopf" title="Raum ändern"></button>
+              <input id="raum-eingabe" class="badge raum-eingabe hidden" type="text" maxlength="30" aria-label="Aktuellen Raum ändern">
+            </div>
+            <!-- Bei automatischer Anmeldung ist dies die einzige Stelle, an der
+                 die Schule sichtbar wird. -->
+            <span id="schul-kennzeichen" class="schul-kennzeichen hidden"></span>
           </div>
           <button id="btn-logout" class="icon-btn">
             <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
@@ -122,6 +132,7 @@
           <div class="input-group">
             <label for="student-name">Name des Schülers (optional)</label>
             <input type="text" id="student-name" placeholder="z.B. Max Mustermann">
+            <p id="demo-hinweis" class="demo-hinweis hidden">Testbetrieb – bitte keine echten Schülernamen eingeben.</p>
           </div>
 
           <h3 class="mt-4">Verfügbare Kollegen:</h3>
