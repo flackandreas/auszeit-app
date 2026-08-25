@@ -13,4 +13,12 @@ services:
       AUSZEIT_SCHULEN: ${AUSZEIT_SCHULEN:-}
       AUSZEIT_STANDARD_SCHULE: ${AUSZEIT_STANDARD_SCHULE:-}
       AUSZEIT_ORIGIN: ${AUSZEIT_ORIGIN:-}
+      # Verwaltung. Ohne Token bleibt sie abgeschaltet. Mit AUSZEIT_ADMIN_PORT
+      # laeuft sie auf einem eigenen, nicht veroeffentlichten Port.
+      AUSZEIT_ADMIN_TOKEN: ${AUSZEIT_ADMIN_TOKEN:-}
+      AUSZEIT_ADMIN_PORT: ${AUSZEIT_ADMIN_PORT:-}
+    volumes:
+      # Die Mandanten muessen den naechsten Build ueberleben - bis hierher war
+      # die App bewusst vergesslich.
+      - ./daten:/app/daten
     restart: unless-stopped

@@ -4,6 +4,10 @@ const { Server } = require('socket.io');
 
 const path = require('path');
 const crypto = require('crypto');
+const speicher = require('./speicher');
+const { erstelleAdmin, TOKEN_MINDESTLAENGE } = require('./admin');
+
+const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
 
 const app = express();
 app.use(express.json());
@@ -31,7 +35,6 @@ const STANDARD_SCHULE = 'standard';
 // Verzoegerung: Eine Sperre liesse sich von aussen ausloesen, um ein Kollegium
 // auszusperren. Die Verzoegerung bremst nur, und die ersten Fehlversuche - also
 // das normale Vertippen - bleiben ohne Wartezeit.
-const PIN_MINDESTLAENGE = 4;
 const PIN_FREIVERSUCHE = 3;
 const PIN_MAX_VERZOEGERUNG_MS = 5000;
 const PIN_VERGESSEN_NACH_MS = 10 * 60 * 1000;
@@ -68,42 +71,47 @@ function gleichwertig(a, b) {
   return crypto.timingSafeEqual(hash(a), hash(b));
 }
 
-function ladeSchulen() {
-  const schulen = new Map();
+// Die Mandanten liegen jetzt in einer Datei statt nur in der Umgebung. Die Map
+// bleibt dieselbe Instanz und wird im Betrieb umbefuellt - dadurch wirkt eine
+// Aenderung sofort, ohne Neustart. Bisher war das ein Container-Neustart, der
+// alle Angemeldeten hinauswarf und laufende Auszeiten verlor.
+const SCHULEN = new Map();
+let standardSchule = null;
+let datenStand = 0;
+
+function uebernehmeMandanten(schulen, standard, mtimeMs) {
+  SCHULEN.clear();
+  for (const [id, schule] of schulen) SCHULEN.set(id, schule);
+  standardSchule = standard;
+  if (typeof mtimeMs === 'number') datenStand = mtimeMs;
+}
+
+{
+  const start = speicher.laden(STANDARD_SCHULE, 'Auszeit-Betreuung');
+  uebernehmeMandanten(start.schulen, start.standard, start.mtimeMs);
+  console.log(`Mandanten: ${[...SCHULEN.keys()].join(', ')} (Datei: ${speicher.DATEI})`);
+}
+
+// Aenderungen an der Datei von aussen - etwa eine Reparatur per SSH - sollen
+// ebenfalls ohne Neustart greifen.
+const mandantenWache = setInterval(() => {
+  if (!speicher.fremdGeaendert(datenStand)) return;
   try {
-    const roh = JSON.parse(process.env.AUSZEIT_SCHULEN || '{}');
-    for (const [code, wert] of Object.entries(roh)) {
-      const id = normalisiereSchulcode(code);
-      if (!id) continue;
-      const pin = wert && wert.pin != null ? String(wert.pin).trim() : '';
-      if (pin && pin.length < PIN_MINDESTLAENGE) {
-        console.error(`PIN fuer "${id}" ist kuerzer als ${PIN_MINDESTLAENGE} Zeichen - Mandant laeuft ohne PIN.`);
-      }
-      schulen.set(id, {
-        name: String((wert && wert.name) || id).trim().slice(0, 80),
-        demo: Boolean(wert && wert.demo),
-        // Ein gemeinsamer Beitrittscode fuer das Kollegium, kein persoenliches
-        // Passwort. Er verlaesst den Server nie.
-        pin: pin.length >= PIN_MINDESTLAENGE ? pin : ''
-      });
-    }
+    const { schulen, standard } = speicher.lesen();
+    if (schulen.size === 0) return;
+    uebernehmeMandanten(schulen, standard, null);
+    datenStand = require('fs').statSync(speicher.DATEI).mtimeMs;
+    console.log('Mandantendatei wurde ausserhalb geaendert - neu eingelesen.');
   } catch (err) {
-    console.error('AUSZEIT_SCHULEN ist kein gueltiges JSON - starte im Einzelbetrieb.');
+    console.error('Geaenderte Mandantendatei ist unbrauchbar - behalte den bisherigen Stand.');
   }
-  // Ohne Konfiguration bleibt es bei einem einzigen Mandanten. Eine Installation
-  // fuer nur eine Schule verhaelt sich dann genau wie bisher.
-  if (schulen.size === 0) schulen.set(STANDARD_SCHULE, { name: 'Auszeit-Betreuung', demo: false });
-  return schulen;
-}
+}, 10 * 1000);
+if (typeof mandantenWache.unref === 'function') mandantenWache.unref();
 
-function normalisiereSchulcode(wert) {
-  if (typeof wert !== 'string') return null;
-  const code = wert.trim().toLowerCase();
-  return /^[a-z0-9][a-z0-9-]{1,31}$/.test(code) ? code : null;
+// Wird von der Admin-Oberflaeche nach jeder Aenderung aufgerufen.
+function speichereMandanten() {
+  datenStand = speicher.schreiben(SCHULEN, standardSchule);
 }
-
-const SCHULEN = ladeSchulen();
-const STANDARD_AUS_UMGEBUNG = normalisiereSchulcode(process.env.AUSZEIT_STANDARD_SCHULE);
 
 // Fehlt der Code und gibt es nur einen Mandanten, ist er gemeint. Ein
 // angegebener, aber unbekannter Code wird nie stillschweigend ersetzt.
@@ -113,7 +121,7 @@ function schuleAufloesen(wunsch) {
   // Ohne Code greift der Standardmandant. Damit bleibt ein blanker Link
   // (und jedes bestehende Lesezeichen) gueltig, auch wenn weitere Schulen
   // eigene Adressen bekommen.
-  if (STANDARD_AUS_UMGEBUNG && SCHULEN.has(STANDARD_AUS_UMGEBUNG)) return STANDARD_AUS_UMGEBUNG;
+  if (standardSchule && SCHULEN.has(standardSchule)) return standardSchule;
   return SCHULEN.size === 1 ? [...SCHULEN.keys()][0] : null;
 }
 
@@ -121,8 +129,9 @@ function schuleAufloesen(wunsch) {
 // ein falscher Link faellt so sofort auf, nicht erst nach dem Ausfuellen.
 app.get('/api/schule', (req, res) => {
   const id = schuleAufloesen(req.query.code);
-  if (!id) return res.status(404).json({ fehler: 'unbekannte_schule' });
-  const schule = SCHULEN.get(id);
+  const schule = id ? SCHULEN.get(id) : null;
+  // Ein stillgelegter Mandant verhaelt sich nach aussen wie ein unbekannter.
+  if (!schule || !schule.aktiv) return res.status(404).json({ fehler: 'unbekannte_schule' });
   // Der Code selbst geht nie nach aussen - nur die Auskunft, dass es einen gibt.
   res.json({ id, name: schule.name, demo: schule.demo, pinNoetig: Boolean(schule.pin) });
 });
@@ -339,6 +348,16 @@ io.on('connection', (socket) => {
     }
 
     const schule = SCHULEN.get(schulId);
+    const teacherIdVoraus = normalisiereId(data && data.teacherId) || socket.id;
+
+    // Stillgelegt: keine neuen Anmeldungen mehr. Wer schon drin ist, darf sich
+    // nach einem Verbindungsabbruch aber wieder verbinden - sonst verschwaende
+    // das Stilllegen laufende Auszeiten mitten in der Stunde.
+    if (!schule.aktiv && !teachers.has(teacherIdVoraus)) {
+      socket.emit('login_failed', { grund: 'unbekannte_schule' });
+      return;
+    }
+
     if (schule.pin) {
       if (++pinVersucheDieserVerbindung > PIN_MAX_JE_VERBINDUNG) {
         socket.disconnect(true);
@@ -355,7 +374,7 @@ io.on('connection', (socket) => {
       pinFehler.delete(schulId);
     }
 
-    const teacherId = normalisiereId(data && data.teacherId) || socket.id;
+    const teacherId = teacherIdVoraus;
     const room = text(data && data.room, 30);
 
     let teacher = teachers.get(teacherId);
@@ -683,6 +702,52 @@ const aufraeumer = setInterval(() => {
   for (const schulId of schulen) broadcastAvailableTeachers(schulId);
 }, AUFRAEUM_INTERVALL_MS);
 if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
+
+// --- Admin-Oberflaeche ---
+//
+// Nur Zahlen, keine Inhalte: die Verwaltung ist die einzige Stelle, an der
+// Daten aller Mandanten zusammenlaufen.
+function mandantZaehler(schulId) {
+  let lehrkraefte = 0;
+  for (const teacher of teachers.values()) {
+    if (teacher.schulId === schulId && teacher.online) lehrkraefte += 1;
+  }
+  let auszeiten = 0;
+  for (const vorfall of incidents) {
+    if (vorfall.schulId === schulId && !ABGESCHLOSSEN.has(vorfall.status)) auszeiten += 1;
+  }
+  return { lehrkraefte, auszeiten };
+}
+
+const adminRouter = erstelleAdmin({
+  schulen: SCHULEN,
+  standard: () => standardSchule,
+  setzeStandard: (id) => { standardSchule = id; },
+  speichern: speichereMandanten,
+  zaehler: mandantZaehler,
+  speicher
+});
+
+if (adminRouter) {
+  const adminPort = Number.parseInt(process.env.AUSZEIT_ADMIN_PORT, 10);
+  if (Number.isFinite(adminPort) && adminPort > 0) {
+    // Eigener Port: der Tunnel veroeffentlicht nur den Anwendungsport, die
+    // Verwaltung bleibt damit auf das Hausnetz beschraenkt. Verwaltung braucht
+    // keinen oeffentlichen Zugang, und was nicht erreichbar ist, kann nicht
+    // angegriffen werden.
+    const adminApp = express();
+    adminApp.use('/admin', adminRouter);
+    adminApp.get('/', (req, res) => res.redirect('/admin'));
+    http.createServer(adminApp).listen(adminPort, () => {
+      console.log(`Admin-Oberflaeche auf Port ${adminPort} (nicht veroeffentlicht)`);
+    });
+  } else {
+    app.use('/admin', adminRouter);
+    console.log('Admin-Oberflaeche unter /admin - erreichbar, wo auch die App erreichbar ist.');
+  }
+} else {
+  console.log(`Admin-Oberflaeche abgeschaltet (AUSZEIT_ADMIN_TOKEN fehlt oder ist unter ${TOKEN_MINDESTLAENGE} Zeichen).`);
+}
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {

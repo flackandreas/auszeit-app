@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandanten · Auszeit-Betreuung</title>
+<style>
+  :root {
+    --bg: #f0fdf4; --flaeche: #ffffff; --rand: rgba(0,153,100,0.16);
+    --text: #062f22; --text-leise: #4a7565;
+    --akzent: #b45309; --akzent-dunkel: #92400e; --akzent-hell: #fef3e2;
+    --warn: #dc2626; --gut: #056d47;
+    --radius: 12px;
+    --schrift: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--schrift); background: var(--bg); color: var(--text); padding: 1.5rem; line-height: 1.5; }
+  .huelle { max-width: 62rem; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
+  h1 { font-size: 1.5rem; letter-spacing: -0.02em; }
+  h1 small { display: block; font-size: 0.8125rem; font-weight: 400; color: var(--text-leise); letter-spacing: 0; }
+  h2 { font-size: 1.125rem; margin-bottom: 0.75rem; }
+
+  .karte { background: var(--flaeche); border: 1px solid var(--rand); border-radius: var(--radius); padding: 1.25rem; margin-bottom: 1.5rem; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.6rem 0.5rem; border-bottom: 1px solid var(--rand); vertical-align: middle; }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-leise); }
+  td.zahl { text-align: right; font-variant-numeric: tabular-nums; }
+  tr.still td:not(.tun) { opacity: 0.5; }
+  .rollbar { overflow-x: auto; }
+
+  code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.875rem; }
+  .marke { display: inline-block; font-size: 0.6875rem; font-weight: 600; padding: 0.1rem 0.45rem; border-radius: 999px; }
+  .marke.standard { background: var(--akzent-hell); color: var(--akzent); }
+  .marke.demo { background: rgba(0,153,100,0.12); color: var(--gut); }
+  .marke.code { background: rgba(0,153,100,0.12); color: var(--gut); }
+  .marke.ohne { background: rgba(220,38,38,0.10); color: var(--warn); }
+
+  button { font-family: inherit; font-size: 0.8125rem; font-weight: 600; padding: 0.35rem 0.7rem;
+           border-radius: 8px; border: 1px solid var(--rand); background: var(--flaeche); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--akzent); color: var(--akzent); }
+  button.haupt { background: var(--akzent); border-color: var(--akzent); color: #fff; }
+  button.haupt:hover { background: var(--akzent-dunkel); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .tun { display: flex; gap: 0.35rem; flex-wrap: wrap; justify-content: flex-end; }
+
+  label { display: block; font-size: 0.8125rem; color: var(--text-leise); margin-bottom: 0.25rem; }
+  input[type=text], input[type=password] { width: 100%; font-family: inherit; font-size: 0.9375rem; padding: 0.55rem 0.7rem;
+    border: 1px solid var(--rand); border-radius: 8px; background: var(--flaeche); color: var(--text); }
+  input:focus { outline: none; border-color: var(--akzent); }
+  .reihe { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; }
+  .reihe > div { flex: 1 1 10rem; }
+  .kasten { display: flex; align-items: center; gap: 0.4rem; font-size: 0.875rem; }
+  .kasten input { width: auto; }
+
+  .hinweis { font-size: 0.8125rem; color: var(--text-leise); margin-top: 0.5rem; }
+  .meldung { padding: 0.7rem 0.9rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.875rem; }
+  .meldung.fehler { background: rgba(220,38,38,0.08); border: 1px solid rgba(220,38,38,0.25); color: #b91c1c; }
+  .meldung.gut { background: rgba(0,153,100,0.10); border: 1px solid rgba(0,153,100,0.25); color: var(--gut); }
+  .versteckt { display: none; }
+  .anmeldung { max-width: 22rem; margin: 4rem auto; }
+</style>
+</head>
+<body>
+<div class="huelle">
+
+  <div id="anmeldung" class="karte anmeldung">
+    <h2>Verwaltung</h2>
+    <p class="hinweis" style="margin-bottom:1rem">Zugriff nur mit Verwaltungs-Token.</p>
+    <div id="anmelde-meldung" class="meldung fehler versteckt"></div>
+    <label for="token">Token</label>
+    <input type="password" id="token" autocomplete="off">
+    <div style="margin-top:0.9rem"><button class="haupt" id="btn-anmelden">Anmelden</button></div>
+  </div>
+
+  <div id="verwaltung" class="versteckt">
+    <header>
+      <h1>Mandanten<small>Auszeit-Betreuung · SchulOS</small></h1>
+      <button id="btn-abmelden">Abmelden</button>
+    </header>
+
+    <div id="meldung" class="meldung versteckt"></div>
+
+    <div class="karte">
+      <h2>Schulen</h2>
+      <div class="rollbar"><table>
+        <thead><tr>
+          <th>Code</th><th>Name</th><th>Zugang</th>
+          <th class="zahl">Angemeldet</th><th class="zahl">Auszeiten</th><th></th>
+        </tr></thead>
+        <tbody id="zeilen"></tbody>
+      </table></div>
+      <p class="hinweis">
+        Zahlen, keine Inhalte: Die Verwaltung zeigt nie Lehrer- oder Schülernamen.
+        „Angemeldet" meint gerade verbundene Lehrkräfte, „Auszeiten" laufende Vorgänge.
+      </p>
+    </div>
+
+    <div class="karte">
+      <h2>Neue Schule</h2>
+      <div class="reihe">
+        <div>
+          <label for="neu-id">Code (wird zur Adresse)</label>
+          <input type="text" id="neu-id" placeholder="z.B. rstn">
+        </div>
+        <div>
+          <label for="neu-name">Name</label>
+          <input type="text" id="neu-name" placeholder="z.B. RS Trittau-Nord">
+        </div>
+        <div>
+          <label for="neu-pin">Beitrittscode (optional)</label>
+          <input type="text" id="neu-pin" placeholder="leer = kein Code">
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="haupt" id="btn-neu">Anlegen</button>
+        </div>
+      </div>
+      <label class="kasten" style="margin-top:0.75rem">
+        <input type="checkbox" id="neu-demo"> Testbetrieb (Hinweis, keine echten Schülernamen einzugeben)
+      </label>
+      <p class="hinweis" id="neu-hinweis"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let stand = { schulen: [], standard: null, mindestlaengeCode: 4 };
+
+function meldung(text, art = 'gut') {
+  const el = $('meldung');
+  el.textContent = text;
+  el.className = `meldung ${art}`;
+  if (!text) el.classList.add('versteckt');
+}
+
+async function ruf(pfad, optionen = {}) {
+  const antwort = await fetch(`/admin/api${pfad}`, {
+    headers: { 'Content-Type': 'application/json' }, ...optionen
+  });
+  if (antwort.status === 401 && pfad !== '/anmelden') { zeigeAnmeldung(); throw new Error('nicht angemeldet'); }
+  const inhalt = antwort.status === 204 ? {} : await antwort.json().catch(() => ({}));
+  if (!antwort.ok) throw new Error(inhalt.fehler || `Fehler ${antwort.status}`);
+  return inhalt;
+}
+
+const FEHLERTEXT = {
+  code_ungueltig: 'Der Code darf nur Kleinbuchstaben, Ziffern und Bindestriche enthalten (2–32 Zeichen).',
+  code_vergeben: 'Diesen Code gibt es bereits.',
+  name_fehlt: 'Bitte einen Namen angeben.',
+  code_zu_kurz: 'Der Beitrittscode ist zu kurz.',
+  standard_nicht_stilllegbar: 'Der Standardmandant kann nicht stillgelegt werden – vorher einen anderen zum Standard machen.',
+  standard_nicht_loeschbar: 'Der Standardmandant kann nicht gelöscht werden.',
+  standard_muss_aktiv_sein: 'Nur ein aktiver Mandant kann Standard werden.',
+  noch_in_benutzung: 'Wird gerade benutzt – erst stilllegen und auslaufen lassen.',
+  letzter_mandant: 'Der letzte Mandant kann nicht gelöscht werden.'
+};
+const zeigeFehler = (e) => meldung(FEHLERTEXT[e.message] || e.message, 'fehler');
+
+function zeigeAnmeldung() {
+  $('anmeldung').classList.remove('versteckt');
+  $('verwaltung').classList.add('versteckt');
+}
+
+async function laden() {
+  stand = await ruf('/schulen');
+  $('anmeldung').classList.add('versteckt');
+  $('verwaltung').classList.remove('versteckt');
+  $('neu-hinweis').textContent =
+    `Der Code wird Teil der Adresse: /s/<code>. Beitrittscode mindestens ${stand.mindestlaengeCode} Zeichen.`;
+  zeichne();
+}
+
+function zeichne() {
+  const koerper = $('zeilen');
+  koerper.innerHTML = '';
+  for (const schule of stand.schulen) {
+    const zeile = document.createElement('tr');
+    if (!schule.aktiv) zeile.className = 'still';
+
+    const marken = [
+      schule.standard ? '<span class="marke standard">Standard</span>' : '',
+      schule.demo ? '<span class="marke demo">Testbetrieb</span>' : '',
+      !schule.aktiv ? '<span class="marke ohne">stillgelegt</span>' : ''
+    ].join(' ');
+
+    zeile.innerHTML = `
+      <td><code>${schule.id}</code></td>
+      <td>${escape(schule.name)} ${marken}</td>
+      <td>${schule.hatCode ? '<span class="marke code">Code gesetzt</span>' : '<span class="marke ohne">offen</span>'}</td>
+      <td class="zahl">${schule.lehrkraefte}</td>
+      <td class="zahl">${schule.auszeiten}</td>
+    `;
+
+    const tun = document.createElement('td');
+    tun.className = 'tun';
+    knopf(tun, 'Umbenennen', () => umbenennen(schule));
+    knopf(tun, schule.hatCode ? 'Code ändern' : 'Code setzen', () => codeSetzen(schule));
+    if (schule.hatCode) knopf(tun, 'Code entfernen', () => codeEntfernen(schule));
+    if (!schule.standard && schule.aktiv) knopf(tun, 'Standard', () => aendern(schule.id, { standard: true }));
+    knopf(tun, schule.aktiv ? 'Stilllegen' : 'Aktivieren', () => stilllegen(schule));
+    if (!schule.aktiv) knopf(tun, 'Löschen', () => loeschen(schule));
+    zeile.appendChild(tun);
+    koerper.appendChild(zeile);
+  }
+}
+
+function knopf(elternteil, text, tun) {
+  const b = document.createElement('button');
+  b.textContent = text;
+  b.addEventListener('click', tun);
+  elternteil.appendChild(b);
+}
+
+function escape(w) {
+  return String(w == null ? '' : w).replace(/[&<>"']/g,
+    z => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[z]));
+}
+
+async function aendern(id, daten) {
+  try {
+    await ruf(`/schulen/${id}`, { method: 'PATCH', body: JSON.stringify(daten) });
+    meldung('Gespeichert. Die Änderung wirkt sofort, ohne Neustart.', 'gut');
+    await laden();
+  } catch (e) { zeigeFehler(e); }
+}
+
+function umbenennen(schule) {
+  const name = prompt(`Neuer Name für "${schule.id}":`, schule.name);
+  if (name !== null && name.trim()) aendern(schule.id, { name: name.trim() });
+}
+
+function codeSetzen(schule) {
+  const pin = prompt(
+    `Beitrittscode für "${schule.name}" (mindestens ${stand.mindestlaengeCode} Zeichen).\n\n` +
+    'Achtung: Alle Lehrkräfte müssen den neuen Code einmalig neu eingeben.', '');
+  if (pin !== null && pin.trim()) aendern(schule.id, { pin: pin.trim() });
+}
+
+function codeEntfernen(schule) {
+  if (confirm(`Beitrittscode für "${schule.name}" entfernen? Danach kommt jeder mit dem Link hinein.`)) {
+    aendern(schule.id, { pin: '' });
+  }
+}
+
+function stilllegen(schule) {
+  if (schule.aktiv && !confirm(
+    `"${schule.name}" stilllegen?\n\n` +
+    'Keine neuen Anmeldungen mehr. Wer gerade verbunden ist, kann weiterarbeiten, ' +
+    'bis er sich abmeldet – laufende Auszeiten brechen also nicht ab.')) return;
+  aendern(schule.id, { aktiv: !schule.aktiv });
+}
+
+async function loeschen(schule) {
+  if (!confirm(`"${schule.name}" endgültig löschen?`)) return;
+  try {
+    await ruf(`/schulen/${schule.id}`, { method: 'DELETE' });
+    meldung('Gelöscht.', 'gut');
+    await laden();
+  } catch (e) { zeigeFehler(e); }
+}
+
+$('btn-neu').addEventListener('click', async () => {
+  try {
+    await ruf('/schulen', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: $('neu-id').value.trim(),
+        name: $('neu-name').value.trim(),
+        pin: $('neu-pin').value.trim(),
+        demo: $('neu-demo').checked
+      })
+    });
+    const code = $('neu-id').value.trim().toLowerCase();
+    $('neu-id').value = ''; $('neu-name').value = ''; $('neu-pin').value = ''; $('neu-demo').checked = false;
+    meldung(`Angelegt. Link zum Weitergeben: /s/${code}`, 'gut');
+    await laden();
+  } catch (e) { zeigeFehler(e); }
+});
+
+$('btn-anmelden').addEventListener('click', async () => {
+  const el = $('anmelde-meldung');
+  el.classList.add('versteckt');
+  try {
+    await ruf('/anmelden', { method: 'POST', body: JSON.stringify({ token: $('token').value }) });
+    $('token').value = '';
+    await laden();
+  } catch (e) {
+    el.textContent = 'Token stimmt nicht.';
+    el.classList.remove('versteckt');
+  }
+});
+$('token').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btn-anmelden').click(); });
+
+$('btn-abmelden').addEventListener('click', async () => {
+  await ruf('/abmelden', { method: 'POST' }).catch(() => {});
+  zeigeAnmeldung();
+});
+
+laden().catch(() => zeigeAnmeldung());
+</script>
+</body>
+</html>

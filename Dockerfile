@@ -19,5 +19,8 @@ COPY backend/package*.json ./backend/
 RUN cd backend && npm ci --omit=dev
 COPY backend/ ./backend/
 
+# Ablage der Mandanten. Als Volume gemountet, damit sie Neubauten ueberlebt.
+RUN mkdir -p /app/daten
+
 EXPOSE 4000
 CMD ["node", "backend/server.js"]

@@ -220,6 +220,41 @@ noch an den eigenen Mandanten, und eine Verweisung ueber die Mandantengrenze
 wird abgewiesen - auch mit erratener Kennung. Eine Geraetekennung gehoert
 dauerhaft zu einer Schule.
 
+### Verwaltung
+
+Mandanten lassen sich ueber eine eigene Oberflaeche anlegen und aendern. Sie
+wirkt **sofort, ohne Neustart** - vorher war jede Aenderung ein
+Container-Neustart, der alle Angemeldeten hinauswarf und laufende Auszeiten
+verlor.
+
+| Variable | Bedeutung |
+| :--- | :--- |
+| `AUSZEIT_ADMIN_TOKEN` | Zugang zur Verwaltung, mindestens 16 Zeichen. **Ohne Token bleibt die Oberflaeche abgeschaltet** - eine ungeschuetzte Verwaltungsseite waere schlimmer als keine. |
+| `AUSZEIT_ADMIN_PORT` | Optional. Laesst die Verwaltung auf einem eigenen Port laufen, der nicht veroeffentlicht wird. Ohne Angabe liegt sie unter `/admin` auf demselben Port wie die App. |
+| `AUSZEIT_DATEN` | Pfad der Mandantendatei. Vorgabe `daten/schulen.json`. |
+
+Die Mandanten liegen in einer JSON-Datei statt nur in der Umgebung, sonst waere
+eine ueber die Oberflaeche angelegte Schule nach dem naechsten Ausrollen weg.
+`AUSZEIT_SCHULEN` dient dann nur noch als **Startbelegung**: Existiert noch
+keine Datei, wird die Umgebung einmalig uebernommen und festgehalten. Eine
+bestehende Installation laeuft dadurch unveraendert weiter.
+
+Die Datei wird atomar geschrieben und alle zehn Sekunden auf fremde Aenderungen
+geprueft - eine Reparatur per SSH wirkt also ebenfalls ohne Neustart. Ist das
+Verzeichnis nicht beschreibbar, laeuft die App wie bisher rein im Speicher
+weiter; nur die Oberflaeche kann dann nichts festhalten.
+
+Was die Verwaltung **nicht** zeigt: Sie ist die einzige Stelle, an der Daten
+aller Mandanten zusammenlaufen, und zeigt deshalb ausschliesslich Zahlen -
+angemeldete Lehrkraefte und laufende Auszeiten. Weder Lehrer- noch
+Schuelernamen verlassen diesen Weg, und ein gesetzter Beitrittscode wird nie
+ausgeliefert, nur sein Vorhandensein.
+
+Stilllegen statt loeschen: Ein stillgelegter Mandant nimmt keine neuen
+Anmeldungen mehr an, wer verbunden ist, arbeitet aber weiter - laufende
+Auszeiten brechen nicht mitten in der Stunde ab. Endgueltig loeschen laesst
+sich nur, was niemand mehr benutzt.
+
 ### Aufbewahrung konfigurieren
 
 Aufbewahrungsfristen sind eine Schulentscheidung, keine Programmierentscheidung.

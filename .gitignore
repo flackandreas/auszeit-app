@@ -108,3 +108,4 @@ out
 dist
 dist-ssr
 *.local
+daten/
