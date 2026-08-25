@@ -16,6 +16,8 @@ const notificationLayer = document.getElementById('notification-layer');
 const inputName = document.getElementById('teacher-name');
 const inputRoom = document.getElementById('teacher-room');
 const btnLogin = document.getElementById('btn-login');
+const pinGruppe = document.getElementById('pin-gruppe');
+const inputPin = document.getElementById('schul-pin');
 
 // Dashboard Elements
 const displayName = document.getElementById('display-name');
@@ -140,6 +142,18 @@ function kennungsSchluessel() {
   return `auszeit_teacher_id${SCHULCODE ? ':' + SCHULCODE : ''}`;
 }
 
+// Der Code liegt im Browser und geht bei jeder Anmeldung mit. Das ist noetig,
+// weil die stille Wiederanmeldung nach einem Verbindungsabbruch sonst jedes Mal
+// nachfragen muesste - und der Code ist ein gemeinsamer Beitrittscode des
+// Kollegiums, kein persoenliches Passwort.
+function pinSchluessel() {
+  return `auszeit_pin${SCHULCODE ? ':' + SCHULCODE : ''}`;
+}
+
+function gemerkterPin() {
+  return localStorage.getItem(pinSchluessel()) || '';
+}
+
 function sitzungsSchluessel() {
   return `auszeit_user${SCHULCODE ? ':' + SCHULCODE : ''}`;
 }
@@ -159,6 +173,7 @@ function meineKennung() {
 // Falscher Link oder Kennung aus einer anderen Schule: klar sagen, statt die
 // Person raten zu lassen, warum keine Kollegen erscheinen.
 const ABWEISUNG = {
+  pin_falsch: 'Der Code stimmt nicht. Bitte beim Kollegium nachfragen.',
   unbekannte_schule: 'Dieser Link gehört zu keiner eingerichteten Schule. Bitte den Link der eigenen Schule verwenden.',
   kennung_fremder_schule: 'Dieses Gerät ist bereits bei einer anderen Schule angemeldet.'
 };
@@ -170,6 +185,13 @@ function zeigeSchule(daten) {
   schulKennzeichen.textContent = daten.schulName;
   schulKennzeichen.classList.remove('hidden');
   demoHinweis.classList.toggle('hidden', !daten.demo);
+}
+
+let pinNoetig = false;
+
+// Nur zeigen, wenn die Schule einen Code verlangt und keiner gemerkt ist.
+function zeigePinFeld() {
+  pinGruppe.classList.toggle('hidden', !(pinNoetig && !gemerkterPin()));
 }
 
 function zeigeSchulfehler(text) {
@@ -191,6 +213,8 @@ async function schulePruefen() {
     }
     const schule = await antwort.json();
     zeigeSchule({ schulName: schule.name, demo: schule.demo });
+    pinNoetig = Boolean(schule.pinNoetig);
+    zeigePinFeld();
     return schule;
   } catch (err) {
     // Ohne Antwort nicht blockieren - die Socket-Anmeldung entscheidet dann.
@@ -235,24 +259,46 @@ btnNotificationAction.addEventListener('click', () => {
   naechstesOverlay();
 });
 
-schulePruefen();
+// Die Abfrage laeuft schon beim Laden los. Die Verbindung wartet sie ab, sonst
+// meldete sie sich an, bevor bekannt ist, ob ein Code noetig ist - und der
+// Fehlversuch liefe in die Drosselung.
+const schuleGeprueft = schulePruefen();
 
 // --- Socket.io Events ---
-socket.on('connect', () => {
+socket.on('connect', async () => {
   console.log('Connected to server');
+  await schuleGeprueft;
+
   // Greift auch nach einem Reconnect: die Anmeldung stellt die Zuordnung
   // Socket -> Lehrkraft wieder her, damit Meldungen ankommen.
   const savedUser = localStorage.getItem(sitzungsSchluessel());
-  if (savedUser) {
-    const user = JSON.parse(savedUser);
-    inputName.value = user.name;
-    inputRoom.value = user.room;
-    anmelden();
-  }
+  if (!savedUser) return;
+
+  const user = JSON.parse(savedUser);
+  inputName.value = user.name;
+  inputRoom.value = user.room;
+
+  // Fehlt der Code, bleibt es bei der ausgefuellten Anmeldemaske: die Person
+  // ergaenzt ihn und drueckt selbst auf Starten.
+  if (pinNoetig && !gemerkterPin()) return;
+  anmelden();
 });
 
 socket.on('login_failed', (antwort) => {
-  zeigeSchulfehler(ABWEISUNG[antwort && antwort.grund] || 'Anmeldung nicht möglich.');
+  const grund = antwort && antwort.grund;
+  zeigeSchulfehler(ABWEISUNG[grund] || 'Anmeldung nicht möglich.');
+
+  if (grund === 'pin_falsch') {
+    // Der gemerkte Code taugt nicht mehr - etwa weil die Schule ihn geaendert
+    // hat. Feld wieder zeigen und erneut fragen.
+    localStorage.removeItem(pinSchluessel());
+    pinNoetig = true;
+    zeigePinFeld();
+    btnLogin.disabled = false;
+    inputPin.value = '';
+    inputPin.focus();
+  }
+
   localStorage.removeItem(sitzungsSchluessel());
   switchView(loginView);
 });
@@ -260,6 +306,12 @@ socket.on('login_failed', (antwort) => {
 socket.on('login_success', (user) => {
   btnLogin.disabled = false;
   schulFehler.classList.add('hidden');
+
+  if (inputPin.value.trim()) {
+    localStorage.setItem(pinSchluessel(), inputPin.value.trim());
+    inputPin.value = '';
+  }
+  pinGruppe.classList.add('hidden');
   currentUser = user;
   localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: user.name, room: user.room }));
   displayName.textContent = user.name;
@@ -531,7 +583,13 @@ function anmelden() {
   const name = inputName.value.trim();
   const room = inputRoom.value.trim();
   if (name && room) {
-    socket.emit('login', { teacherId: meineKennung(), schulId: SCHULCODE, name, room });
+    socket.emit('login', {
+      teacherId: meineKennung(),
+      schulId: SCHULCODE,
+      pin: inputPin.value.trim() || gemerkterPin(),
+      name,
+      room
+    });
   } else {
     showToast('Bitte Name und Raum eingeben.');
   }

@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
@@ -20,6 +21,53 @@ app.use(express.json());
 // allein sitzt und sich ueber die fehlenden Kollegen wundert.
 const STANDARD_SCHULE = 'standard';
 
+// --- Beitrittscode je Schule ---
+//
+// Der Code ist ein gemeinsames Geheimnis des Kollegiums, vergleichbar mit einem
+// WLAN-Schluessel - kein persoenliches Passwort. Er steht im Klartext in der
+// Konfiguration und wird nie an einen Client gesendet.
+//
+// Gegen das Durchprobieren hilft keine Sperre, sondern eine wachsende
+// Verzoegerung: Eine Sperre liesse sich von aussen ausloesen, um ein Kollegium
+// auszusperren. Die Verzoegerung bremst nur, und die ersten Fehlversuche - also
+// das normale Vertippen - bleiben ohne Wartezeit.
+const PIN_MINDESTLAENGE = 4;
+const PIN_FREIVERSUCHE = 3;
+const PIN_MAX_VERZOEGERUNG_MS = 5000;
+const PIN_VERGESSEN_NACH_MS = 10 * 60 * 1000;
+const PIN_MAX_JE_VERBINDUNG = 10;
+
+const pinFehler = new Map(); // schulId -> { anzahl, letzter }
+
+function pinVerzoegerung(schulId) {
+  const eintrag = pinFehler.get(schulId);
+  if (!eintrag) return 0;
+  if (Date.now() - eintrag.letzter > PIN_VERGESSEN_NACH_MS) {
+    pinFehler.delete(schulId);
+    return 0;
+  }
+  if (eintrag.anzahl <= PIN_FREIVERSUCHE) return 0;
+  return Math.min(PIN_MAX_VERZOEGERUNG_MS, 250 * 2 ** (eintrag.anzahl - PIN_FREIVERSUCHE));
+}
+
+function merkePinFehler(schulId) {
+  const eintrag = pinFehler.get(schulId);
+  const frisch = !eintrag || Date.now() - eintrag.letzter > PIN_VERGESSEN_NACH_MS;
+  pinFehler.set(schulId, {
+    anzahl: frisch ? 1 : eintrag.anzahl + 1,
+    letzter: Date.now()
+  });
+}
+
+// Zeitkonstanter Vergleich: ein frueher Abbruch bei der ersten falschen Stelle
+// verriete ueber die Laufzeit, wie viel vom Code schon stimmt. Der Umweg ueber
+// den Hash haelt beide Seiten gleich lang, sodass auch die Laenge nichts sagt.
+function gleichwertig(a, b) {
+  const hash = (wert) => crypto.createHash('sha256')
+    .update(String(wert == null ? '' : wert), 'utf8').digest();
+  return crypto.timingSafeEqual(hash(a), hash(b));
+}
+
 function ladeSchulen() {
   const schulen = new Map();
   try {
@@ -27,9 +75,16 @@ function ladeSchulen() {
     for (const [code, wert] of Object.entries(roh)) {
       const id = normalisiereSchulcode(code);
       if (!id) continue;
+      const pin = wert && wert.pin != null ? String(wert.pin).trim() : '';
+      if (pin && pin.length < PIN_MINDESTLAENGE) {
+        console.error(`PIN fuer "${id}" ist kuerzer als ${PIN_MINDESTLAENGE} Zeichen - Mandant laeuft ohne PIN.`);
+      }
       schulen.set(id, {
         name: String((wert && wert.name) || id).trim().slice(0, 80),
-        demo: Boolean(wert && wert.demo)
+        demo: Boolean(wert && wert.demo),
+        // Ein gemeinsamer Beitrittscode fuer das Kollegium, kein persoenliches
+        // Passwort. Er verlaesst den Server nie.
+        pin: pin.length >= PIN_MINDESTLAENGE ? pin : ''
       });
     }
   } catch (err) {
@@ -68,7 +123,8 @@ app.get('/api/schule', (req, res) => {
   const id = schuleAufloesen(req.query.code);
   if (!id) return res.status(404).json({ fehler: 'unbekannte_schule' });
   const schule = SCHULEN.get(id);
-  res.json({ id, name: schule.name, demo: schule.demo });
+  // Der Code selbst geht nie nach aussen - nur die Auskunft, dass es einen gibt.
+  res.json({ id, name: schule.name, demo: schule.demo, pinNoetig: Boolean(schule.pin) });
 });
 
 // Das gebaute Frontend wird vom selben Server ausgeliefert wie die
@@ -267,6 +323,7 @@ function syncGegenseiten(teacherId) {
 
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
+  let pinVersucheDieserVerbindung = 0;
 
   // Anmeldung - und zugleich die Wiederanmeldung nach einem Reconnect.
   socket.on('login', (data) => {
@@ -279,6 +336,23 @@ io.on('connection', (socket) => {
     if (!schulId) {
       socket.emit('login_failed', { grund: 'unbekannte_schule' });
       return;
+    }
+
+    const schule = SCHULEN.get(schulId);
+    if (schule.pin) {
+      if (++pinVersucheDieserVerbindung > PIN_MAX_JE_VERBINDUNG) {
+        socket.disconnect(true);
+        return;
+      }
+      if (!gleichwertig(text(data && data.pin, 64), schule.pin)) {
+        // Warten, bevor geantwortet wird - das bremst das Durchprobieren,
+        // ohne jemanden auszusperren.
+        const warten = pinVerzoegerung(schulId);
+        merkePinFehler(schulId);
+        setTimeout(() => socket.emit('login_failed', { grund: 'pin_falsch' }), warten);
+        return;
+      }
+      pinFehler.delete(schulId);
     }
 
     const teacherId = normalisiereId(data && data.teacherId) || socket.id;
@@ -318,7 +392,6 @@ io.on('connection', (socket) => {
     socket.join(teacherId);
     socket.join(`schule:${schulId}`);
 
-    const schule = SCHULEN.get(schulId);
     socket.emit('login_success', {
       ...oeffentlich(teacher),
       isAvailable: teacher.isAvailable,

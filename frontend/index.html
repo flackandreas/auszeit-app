@@ -51,6 +51,13 @@
             <label for="teacher-room">Aktueller Raum</label>
             <input type="text" id="teacher-room" placeholder="z.B. 104" required>
           </div>
+
+          <!-- Erscheint nur, wenn die Schule einen Beitrittscode verlangt, und
+               nur beim ersten Mal: danach liegt er im Browser. -->
+          <div class="input-group hidden" id="pin-gruppe">
+            <label for="schul-pin">Code der Schule</label>
+            <input type="password" id="schul-pin" inputmode="numeric" autocomplete="off" maxlength="64" placeholder="einmalig eingeben">
+          </div>
           
           <button id="btn-login" class="btn btn-primary">Starten</button>
         </div>

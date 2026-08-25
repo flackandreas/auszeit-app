@@ -179,7 +179,7 @@ Adresse, kein zusaetzliches Feld. Eingerichtet wird er ueber `AUSZEIT_SCHULEN`
 
 ```json
 {
-  "rstn": { "name": "RS Trittau-Nord" },
+  "rstn": { "name": "RS Trittau-Nord", "pin": "4711" },
   "demo": { "name": "Offene Demo", "demo": true }
 }
 ```
@@ -192,6 +192,28 @@ Adresse, kein zusaetzliches Feld. Eingerichtet wird er ueber `AUSZEIT_SCHULEN`
 
 `demo: true` blendet beim Schuelernamen den Hinweis ein, im Testbetrieb keine
 echten Namen einzugeben.
+
+#### Beitrittscode
+
+Mit `pin` verlangt ein Mandant einen gemeinsamen Code (mindestens vier Zeichen;
+kuerzere werden verworfen und der Mandant laeuft ohne). Die Lehrkraft gibt ihn
+**einmalig** ein, danach liegt er im Browser und geht bei jeder Anmeldung
+stillschweigend mit - auch bei der Wiederanmeldung nach einem
+Verbindungsabbruch, die sonst jedes Mal nachfragen muesste.
+
+Einordnung, damit die Erwartung stimmt: Das ist ein **gemeinsames Geheimnis des
+Kollegiums**, vergleichbar mit einem WLAN-Schluessel - kein persoenliches
+Passwort. Er steht im Klartext in der Konfiguration, liegt im Klartext im
+Browser der Lehrkraft und identifiziert niemanden. Er haelt Fremde mit einem
+weitergeleiteten Link drausssen, mehr nicht. Wer Identitaeten braucht, braucht
+die naechste Stufe (Namensliste je Schule oder IServ-OIDC).
+
+Gegen das Durchprobieren steht keine Sperre, sondern eine wachsende
+Verzoegerung der Antwort: Die ersten drei Fehlversuche kosten nichts - Vertippen
+soll nicht bestraft werden -, danach verdoppelt sie sich bis auf fuenf Sekunden
+und wird nach zehn ruhigen Minuten vergessen. Eine Sperre waere von aussen
+ausloesbar, um ein ganzes Kollegium auszusperren; eine Verzoegerung bremst nur.
+Zusaetzlich trennt der Server eine Verbindung nach zehn Fehlversuchen.
 
 Was die Trennung leistet: Die Liste der aufnahmebereiten Lehrkraefte geht nur
 noch an den eigenen Mandanten, und eine Verweisung ueber die Mandantengrenze
