@@ -4,6 +4,10 @@ services:
     container_name: auszeit_app
     ports:
       - "4000:4000"
+      # Verwaltung. Vorgabe 127.0.0.1: nur auf dem Rechner selbst erreichbar.
+      # AUSZEIT_ADMIN_BIND=0.0.0.0 oeffnet sie fuers Hausnetz. Der Tunnel
+      # veroeffentlicht ausschliesslich Port 4000, nie diesen hier.
+      - "${AUSZEIT_ADMIN_BIND:-127.0.0.1}:${AUSZEIT_ADMIN_PORT:-4001}:${AUSZEIT_ADMIN_PORT:-4001}"
     environment:
       TZ: Europe/Berlin
       PORT: 4000
