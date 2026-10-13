@@ -507,6 +507,18 @@ input:checked + .slider:before { transform: translateX(36px); }
 .demo-hinweis.hidden { display: none; }
 
 .input-group.hidden { display: none; }
+.input-group input[readonly] { background: var(--bg-secondary); color: var(--text-secondary); }
+
+/* Anmeldung ueber das Portal */
+a.btn { text-decoration: none; }
+.btn.hidden { display: none; }
+.trenner {
+  text-align: center;
+  margin: 1rem 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+.trenner.hidden { display: none; }
 
 .btn:disabled { opacity: 0.5; cursor: default; }
 

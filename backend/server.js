@@ -7,11 +7,18 @@ const crypto = require('crypto');
 const speicher = require('./speicher');
 const { erstelleAdmin, TOKEN_MINDESTLAENGE } = require('./admin');
 const { erstelleSitzungen } = require('./sitzungen');
+const { liesKeks } = require('./kekse');
+const { konfigurationAusUmgebung, erstellePortal } = require('./portal');
 
 const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
 
 const app = express();
 app.use(express.json());
+
+// Vor Auszeit stehen Caddy und im Betrieb Cloudflare. Vertraut wird nur
+// Proxys aus dem eigenen Netz - einem Absender aus dem Internet glaubt Express
+// keinen X-Forwarded-For-Kopf.
+app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 // --- Mandanten ---
 //
@@ -143,7 +150,14 @@ app.get('/api/schule', (req, res) => {
   // Ein stillgelegter Mandant verhaelt sich nach aussen wie ein unbekannter.
   if (!schule || !schule.aktiv) return res.status(404).json({ fehler: 'unbekannte_schule' });
   // Der Code selbst geht nie nach aussen - nur die Auskunft, dass es einen gibt.
-  res.json({ id, name: schule.name, demo: schule.demo, pinNoetig: Boolean(schule.pin) });
+  res.json({
+    id,
+    name: schule.name,
+    demo: schule.demo,
+    pinNoetig: Boolean(schule.pin) && !PORTAL.nurPortal,
+    portal: Boolean(portal),
+    nurPortal: PORTAL.nurPortal
+  });
 });
 
 // Das gebaute Frontend wird vom selben Server ausgeliefert wie die
@@ -168,9 +182,30 @@ const server = http.createServer(app);
 const ERLAUBTE_HERKUNFT = (process.env.AUSZEIT_ORIGIN || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
-const io = new Server(server, ERLAUBTE_HERKUNFT.length > 0
-  ? { cors: { origin: ERLAUBTE_HERKUNFT, methods: ['GET', 'POST'] } }
-  : {});
+// Herkunftspruefung beim Handshake. CORS allein genuegt nicht: es regelt nur
+// die Abfragen per XHR, nicht den Aufbau einer WebSocket-Verbindung. Seit der
+// Handshake das Sitzungscookie der Portal-Anmeldung liest, koennte sonst eine
+// fremde Seite unter derselben Domain - etwa ein anderes Modul mit einer Luecke
+// - eine Verbindung im Namen der Lehrkraft aufbauen; der Browser schickt das
+// Cookie (SameSite=Lax) innerhalb derselben Domain mit. Ohne Origin-Kopf ist
+// es kein Browser, und der traegt auch kein fremdes Cookie mit sich.
+function herkunftErlaubt(anfrage) {
+  const herkunft = anfrage.headers.origin;
+  if (!herkunft) return true;
+  if (ERLAUBTE_HERKUNFT.includes(herkunft)) return true;
+  try {
+    return new URL(herkunft).host === anfrage.headers.host;
+  } catch (err) {
+    return false;
+  }
+}
+
+const io = new Server(server, {
+  ...(ERLAUBTE_HERKUNFT.length > 0
+    ? { cors: { origin: ERLAUBTE_HERKUNFT, methods: ['GET', 'POST'] } }
+    : {}),
+  allowRequest: (anfrage, antwort) => antwort(null, herkunftErlaubt(anfrage))
+});
 
 // --- Datenhaltung (In-Memory) ---
 //
@@ -191,6 +226,32 @@ const incidents = [];
 // abmeldet, ist die Sitzung am naechsten Morgen sonst noch offen.
 const SITZUNG_GUELTIG_MS = dauerAusUmgebung('AUSZEIT_SITZUNG_TTL_MS', 14 * 60 * 60 * 1000);
 const sitzungen = erstelleSitzungen({ gueltigMs: SITZUNG_GUELTIG_MS });
+
+// --- Anmeldung ueber das SchulOS-Portal ---
+//
+// Ohne PORTAL_ISSUER bleibt alles wie bisher. Im Verbund gilt: ein Portal ist
+// eine Schule, die Lehrkraefte landen im Standardmandanten.
+const PORTAL = konfigurationAusUmgebung();
+const portal = PORTAL.aktiv ? erstellePortal(PORTAL) : null;
+
+// Das Cookie traegt dasselbe Token wie bei der Anmeldung mit Code, nur dass
+// das Browser-JavaScript es nie zu sehen bekommt (HttpOnly).
+const SITZUNGS_KEKS = 'auszeit_sitzung';
+const VORGANGS_KEKS = 'auszeit_vorgang';
+
+if (PORTAL.fehlend.length > 0) {
+  console.error(`Portal-Anbindung unvollstaendig, es fehlt: ${PORTAL.fehlend.join(', ')} - Anmeldung ueber das Portal ist aus.`);
+}
+if (portal) {
+  console.log(`Anmeldung ueber das Portal: ${PORTAL.aussteller}${PORTAL.intern ? ` (intern ${PORTAL.intern})` : ''}`);
+}
+// Bewusst strenger als die PHP-Module: Dort gilt PORTAL_NUR_SSO nur bei
+// vollstaendiger Portal-Konfiguration. Hier bleibt die Anmeldung mit Code
+// trotzdem zu - im Verbund laeuft Auszeit ohne Beitrittscode, und ein
+// vergessenes Geheimnis oeffnete sonst die Tuer fuer jede und jeden.
+if (PORTAL.nurPortal && !portal) {
+  console.error('PORTAL_NUR_SSO=1, aber die Portal-Anbindung ist aus - niemand kann sich anmelden.');
+}
 
 // Zustaende eines Vorfalls. Hin- und Rueckweg sind derselbe zweistufige
 // Handschlag mit vertauschten Rollen: erst "ist unterwegs", dann bestaetigt
@@ -360,6 +421,210 @@ function syncGegenseiten(teacherId) {
   for (const id of andere) syncUserIncidents(id);
 }
 
+// --- Portal-Anmeldung: Routen ---
+
+function escapeHtml(wert) {
+  return String(wert == null ? '' : wert).replace(/[&<>"']/g, z => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[z]
+  ));
+}
+
+// Schlichte Seite fuer alles, was beim Weg ueber das Portal schiefgeht. Sie
+// nennt nie den technischen Grund - der steht im Log -, sondern was die
+// Lehrkraft jetzt tun kann.
+function fehlerseite(res, status, titel, text) {
+  const portalLink = portal ? `<a href="${escapeHtml(portal.aussteller)}">Zum Portal</a>` : '';
+  res.status(status).set('Cache-Control', 'no-store').type('html').send(`<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(titel)} · Auszeit</title>
+<style>body{font-family:system-ui,sans-serif;background:#f0fdf4;color:#062f22;margin:0;padding:16px}
+main{max-width:28rem;margin:12vh auto;background:#fff;border-radius:16px;padding:24px;box-shadow:0 4px 24px rgba(6,47,34,.08)}
+h1{font-size:1.25rem;margin:0 0 .75rem}p{line-height:1.5}a{color:#b45309;font-weight:600;margin-right:1rem}</style>
+</head><body><main><h1>${escapeHtml(titel)}</h1><p>${escapeHtml(text)}</p>
+<p><a href="/sso/start">Erneut anmelden</a>${portalLink}</p></main></body></html>`);
+}
+
+function keksOptionen(maxAge) {
+  return { httpOnly: true, sameSite: 'lax', secure: Boolean(portal && portal.sicher), path: '/', maxAge };
+}
+
+// Die Sitzung zum Cookie dieser Anfrage, nur wenn sie ueber das Portal
+// entstanden ist.
+function portalSitzung(anfrage) {
+  const sitzung = sitzungen.sitzung(liesKeks(anfrage, SITZUNGS_KEKS));
+  return sitzung && sitzung.portal ? sitzung : null;
+}
+
+// Eine Lehrkraft je Portalkonto, gefunden ueber sub - nicht ueber das Kuerzel,
+// das nach Jahren neu vergeben wird, und nicht ueber die Sitzung: Laeuft die
+// ab oder meldet sich die Lehrkraft am Tablet zusaetzlich an, findet sie ihre
+// laufenden Auszeiten trotzdem wieder.
+function lehrkraftFuerPortal(identitaet, schulId) {
+  for (const teacher of teachers.values()) {
+    if (teacher.sub === identitaet.sub && teacher.schulId === schulId) {
+      // Das Portal ist die fuehrende Quelle: Wer dort umbenannt oder aus der
+      // Schulleitung genommen wird, ist es hier ab der naechsten Anmeldung
+      // auch.
+      teacher.name = identitaet.name || teacher.name;
+      teacher.kuerzel = identitaet.kuerzel;
+      teacher.verwaltung = portal.istVerwaltung(identitaet);
+      return teacher;
+    }
+  }
+  const teacher = {
+    id: neueKennung(),
+    sub: identitaet.sub,
+    kuerzel: identitaet.kuerzel,
+    schulId,
+    name: identitaet.name || identitaet.kuerzel,
+    room: '',
+    isAvailable: false,
+    plaetze: 0,
+    betreut: [],
+    online: false,
+    // Wer sich anmeldet, aber nie verbindet, faellt mit dem Aufraeumen weg.
+    offlineSeit: Date.now(),
+    // Rolle "Verwaltung" aus den Portalgruppen - gebraucht fuer den Import
+    // der Schuelerliste.
+    verwaltung: portal.istVerwaltung(identitaet)
+  };
+  teachers.set(teacher.id, teacher);
+  return teacher;
+}
+
+// Beendet eine Sitzung und meldet alle Tabs ab, die an ihr haengen. Gemeinsam
+// fuer den Abmeldeknopf (mit Code und ueber das Portal) und fuer die Abmeldung,
+// die das Portal ueber den Vorderkanal schickt.
+function beendeSitzung(schluessel, ausloeser = null) {
+  const sitzung = sitzungen.widerrufen(schluessel);
+  for (const tab of io.sockets.sockets.values()) {
+    if (tab.data.sitzung !== schluessel) continue;
+    // Nicht an den Tab, der abmeldet: Der hat sich schon selbst
+    // zurueckgesetzt und meldet sich womoeglich gleich neu an.
+    if (tab !== ausloeser) tab.emit('logged_out');
+    delete tab.data.portalToken;
+    // Mit dem letzten Tab geht die Lehrkraft offline, und die Kollegenliste
+    // wird neu verschickt.
+    loeseVerbindung(tab);
+  }
+  // Wer sich abmeldet, nimmt niemanden mehr auf - es sei denn, sie ist am
+  // Tablet noch angemeldet.
+  const teacher = sitzung ? teachers.get(sitzung.teacherId) : undefined;
+  if (teacher && !teacher.online) teacher.isAvailable = false;
+}
+
+// Hinweg zum Portal.
+app.get('/sso/start', async (req, res) => {
+  if (!portal) return res.redirect(303, '/');
+  try {
+    const { kennung, adresse } = await portal.beginne();
+    res.cookie(VORGANGS_KEKS, kennung, { ...keksOptionen(10 * 60 * 1000), path: '/sso' });
+    res.redirect(303, adresse);
+  } catch (err) {
+    console.error('Anmeldung am Portal nicht startbar:', err.message);
+    fehlerseite(res, 503, 'Portal nicht erreichbar', 'Das SchulOS-Portal antwortet gerade nicht. Bitte gleich noch einmal versuchen.');
+  }
+});
+
+// Rueckweg vom Portal: Code einloesen, Lehrkraft zuordnen, Sitzung beginnen.
+app.get('/sso/rueckweg', async (req, res) => {
+  if (!portal) return res.redirect(303, '/');
+  const kennung = liesKeks(req, VORGANGS_KEKS);
+  res.clearCookie(VORGANGS_KEKS, { ...keksOptionen(), path: '/sso' });
+
+  let ergebnis;
+  try {
+    const suche = new URL(req.originalUrl, 'http://auszeit.invalid').search;
+    ergebnis = await portal.schliesseAb(kennung, suche);
+  } catch (err) {
+    // openid-client nennt den eigentlichen Grund oft erst in err.cause - etwa
+    // bei einer falschen Signatur. Ins Log gehoert er, auf die Seite nicht.
+    const grund = err.cause && err.cause.message ? ` (${err.cause.message})` : '';
+    console.error('Anmeldung ueber das Portal gescheitert:', err.code || '', err.message + grund);
+    return fehlerseite(res, 400, 'Anmeldung nicht abgeschlossen',
+      'Die Anmeldung über das Portal konnte nicht abgeschlossen werden. Bitte erneut versuchen.');
+  }
+
+  const { identitaet, idToken } = ergebnis;
+  if (!portal.hatZugang(identitaet)) {
+    console.log(`Zugang verweigert fuer ${identitaet.kuerzel || identitaet.sub} - nicht in PORTAL_ZUGANG_GRUPPEN.`);
+    return fehlerseite(res, 403, 'Kein Zugang',
+      'Für Ihr Konto ist Auszeit nicht freigegeben. Die Schulleitung kann das im Portal ändern.');
+  }
+
+  const schulId = schuleAufloesen(undefined);
+  if (!schulId) {
+    console.error('Portal-Anmeldung ohne Standardmandant - AUSZEIT_STANDARD_SCHULE setzen.');
+    return fehlerseite(res, 503, 'Auszeit ist nicht eingerichtet',
+      'Für diese Installation ist keine Schule hinterlegt. Bitte an die Administration wenden.');
+  }
+
+  const teacher = lehrkraftFuerPortal(identitaet, schulId);
+
+  // Gehoerte die bisherige Sitzung dieses Browsers einer anderen Lehrkraft -
+  // auf einem Raum-PC der Normalfall -, endet sie jetzt samt ihren Tabs. Bei
+  // derselben Lehrkraft (Kachel ein zweites Mal geoeffnet) laufen die offenen
+  // Tabs weiter.
+  const alt = sitzungen.sitzung(liesKeks(req, SITZUNGS_KEKS));
+  if (alt && alt.teacherId !== teacher.id) beendeSitzung(alt.schluessel);
+  const token = sitzungen.ausstellen(teacher.id, { portal: true, sid: identitaet.sid, idToken });
+  res.cookie(SITZUNGS_KEKS, token, keksOptionen(SITZUNG_GUELTIG_MS));
+  res.redirect(303, '/');
+});
+
+// Abmeldung ueber den Vorderkanal: Das Portal laedt diese Adresse beim
+// Abmelden in einem unsichtbaren Rahmen. Beendet werden alle Sitzungen dieser
+// Portalsitzung (sid) - die Tabs dieses Browsers, nicht die am Tablet.
+app.get('/sso/abmelden', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  // Nur das Portal darf die Seite einrahmen.
+  res.set('Content-Security-Policy', `default-src 'none'; frame-ancestors ${portal ? portal.ursprung : "'none'"}`);
+  const sid = portal ? portal.istVorderkanalAbmeldung(req.query) : null;
+  if (sid) {
+    for (const schluessel of sitzungen.schluesselWo(s => s.portal && s.sid === sid)) beendeSitzung(schluessel);
+    res.clearCookie(SITZUNGS_KEKS, keksOptionen());
+  }
+  // Immer 204: ob hier eine Sitzung bestand, geht den Aufrufer nichts an.
+  res.status(204).end();
+});
+
+// Der Abmeldeknopf bei Anmeldung ueber das Portal. POST, damit kein Bild und
+// kein Link einer fremden Seite die Lehrkraft abmelden kann; das Cookie kommt
+// bei einem fremden POST ohnehin nicht mit (SameSite=Lax).
+app.post('/abmelden', async (req, res) => {
+  const sitzung = portalSitzung(req);
+  res.clearCookie(SITZUNGS_KEKS, keksOptionen());
+  if (!sitzung) return res.redirect(303, '/');
+  beendeSitzung(sitzung.schluessel);
+  // Weiter zum Portal: Das beendet seine eigene Sitzung und meldet dann alle
+  // anderen Module ab. Sonst bliebe man dort angemeldet - auf einem geteilten
+  // Geraet genau das, was nicht passieren soll.
+  try {
+    res.redirect(303, await portal.abmeldeAdresse(sitzung.idToken));
+  } catch (err) {
+    console.error('Abmeldung beim Portal nicht moeglich:', err.message);
+    res.redirect(303, '/');
+  }
+});
+
+// Wer ist ueber das Portal angemeldet? Fuer die Anmeldemaske: Name und
+// Kuerzel stehen schon fest, gefragt wird nur noch der Raum.
+app.get('/api/sitzung', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const sitzung = portalSitzung(req);
+  const teacher = sitzung ? teachers.get(sitzung.teacherId) : undefined;
+  if (!teacher) return res.status(401).json({ fehler: 'keine_sitzung' });
+  res.json({ name: teacher.name, kuerzel: teacher.kuerzel, raum: teacher.room });
+});
+
+// Beim Handshake das Sitzungscookie lesen. Damit steht serverseitig fest, wer
+// die Lehrkraft ist; der Client kann es nicht behaupten.
+io.use((socket, next) => {
+  const token = liesKeks(socket.request, SITZUNGS_KEKS);
+  if (token && portal) socket.data.portalToken = token;
+  next();
+});
+
 io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
   let pinVersucheDieserVerbindung = 0;
@@ -378,6 +643,16 @@ io.on('connection', (socket) => {
     }
     const schule = SCHULEN.get(schulId);
 
+    if (data && data.portal) {
+      ueberPortalAnmelden(data, schule, schulId);
+      return;
+    }
+    // Mit PORTAL_NUR_SSO fuehrt jeder Weg hinein ueber das Portal - auch ein
+    // altes Token aus einer Code-Anmeldung zaehlt dann nicht mehr.
+    if (PORTAL.nurPortal) {
+      socket.emit('login_failed', { grund: 'nur_portal' });
+      return;
+    }
     if (data && data.token != null) {
       wiederanmelden(data, schule, schulId);
     } else {
@@ -385,9 +660,36 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Wer die Lehrkraft ist, steht schon fest: Der Handshake hat das
+  // Sitzungscookie gelesen. Der Client schickt nur noch den Raum - Name und
+  // Kuerzel kommen aus dem Portal, nicht aus einem Formular.
+  function ueberPortalAnmelden(data, schule, schulId) {
+    const sitzung = socket.data.portalToken ? sitzungen.sitzung(socket.data.portalToken) : null;
+    const teacher = sitzung && sitzung.portal ? teachers.get(sitzung.teacherId) : undefined;
+    if (!teacher) {
+      socket.emit('login_failed', { grund: 'portal_sitzung_fehlt' });
+      return;
+    }
+    if (teacher.schulId !== schulId) {
+      socket.emit('login_failed', { grund: 'kennung_fremder_schule' });
+      return;
+    }
+
+    const room = text(data.room, 30);
+    if (room) teacher.room = room;
+    if (!teacher.room) {
+      socket.emit('login_failed', { grund: 'raum_fehlt' });
+      return;
+    }
+    teacher.online = true;
+    teacher.offlineSeit = null;
+    verbinde(teacher, schule, { schluessel: sitzung.schluessel });
+  }
+
   function wiederanmelden(data, schule, schulId) {
-    const teacherId = sitzungen.pruefen(data.token);
-    const teacher = teacherId ? teachers.get(teacherId) : undefined;
+    const sitzung = sitzungen.sitzung(data.token);
+    // Ein Portal-Token gehoert ins Cookie, nicht in die Nachricht.
+    const teacher = sitzung && !sitzung.portal ? teachers.get(sitzung.teacherId) : undefined;
     // Abgelaufen, widerrufen oder nach einem Neustart unbekannt - fuer den
     // Client laeuft alles auf dasselbe hinaus: neu anmelden.
     if (!teacher) {
@@ -410,7 +712,7 @@ io.on('connection', (socket) => {
     if (room) teacher.room = room;
     teacher.online = true;
     teacher.offlineSeit = null;
-    verbinde(teacher, schule, null);
+    verbinde(teacher, schule, { schluessel: sitzung.schluessel });
   }
 
   function erstanmelden(data, schule, schulId) {
@@ -454,10 +756,13 @@ io.on('connection', (socket) => {
       offlineSeit: null
     };
     teachers.set(teacher.id, teacher);
-    verbinde(teacher, schule, sitzungen.ausstellen(teacher.id));
+    const token = sitzungen.ausstellen(teacher.id);
+    verbinde(teacher, schule, { token, schluessel: sitzungen.sitzung(token).schluessel });
   }
 
-  function verbinde(teacher, schule, token) {
+  // Bindet diesen Socket an Lehrkraft und Sitzung. Die Sitzung merkt er sich,
+  // damit eine Abmeldung genau die Tabs dieses Browsers trifft.
+  function verbinde(teacher, schule, { token = null, schluessel }) {
     // Derselbe Tab kann sich ein zweites Mal anmelden, etwa nach einem
     // Doppelklick auf "Starten". Die erste Zuordnung muss dann geloest werden,
     // sonst bliebe deren Lehrkraft ohne Verbindung fuer immer "online".
@@ -465,6 +770,7 @@ io.on('connection', (socket) => {
     if (vorher && vorher !== teacher.id) loeseVerbindung(socket);
 
     socketToTeacher.set(socket.id, teacher.id);
+    socket.data.sitzung = schluessel;
     socket.join(teacher.id);
     socket.join(`schule:${teacher.schulId}`);
 
@@ -652,38 +958,22 @@ io.on('connection', (socket) => {
     broadcastAvailableTeachers(teacher.schulId);
   });
 
-  // Abmeldung: Das Token wird widerrufen, und zwar fuer alle Tabs dieser
-  // Sitzung - sonst bliebe auf dem Raum-PC ein zweiter Tab angemeldet, und
-  // sein naechster Reconnect fuehrte trotzdem ins Leere. Der Datensatz der
-  // Lehrkraft bleibt, solange sie noch jemanden betreut oder ein Vorfall offen
-  // ist; die Gegenseite sieht sie als nicht erreichbar und kann einseitig
-  // abschliessen.
+  // Abmeldung: Die Sitzung dieses Browsers endet, und zwar fuer alle seine
+  // Tabs - sonst bliebe auf dem Raum-PC ein zweiter Tab angemeldet. Der
+  // Datensatz der Lehrkraft bleibt, solange sie noch jemanden betreut oder ein
+  // Vorfall offen ist; die Gegenseite sieht sie als nicht erreichbar und kann
+  // einseitig abschliessen.
   socket.on('logout', (data) => {
     // War der Tab beim Abmelden ohne Verbindung, kommt die Abmeldung erst nach
-    // dem Reconnect an - auf einem Socket, der noch keiner Lehrkraft gehoert.
-    // Dann weist das mitgeschickte Token aus, wessen Sitzung endet. Sonst
+    // dem Reconnect an - auf einem Socket, der noch keiner Sitzung gehoert.
+    // Dann weist das mitgeschickte Token aus, welche Sitzung endet. Sonst
     // bliebe es gueltig, obwohl der Browser es laengst verworfen hat.
-    const teacher = aktuelleLehrkraft(socket)
-      || teachers.get(sitzungen.pruefen(data && data.token));
-    if (!teacher) return;
-
-    sitzungen.widerrufeFuer(teacher.id);
-    teacher.isAvailable = false;
-
-    for (const [socketId, teacherId] of [...socketToTeacher]) {
-      if (teacherId !== teacher.id) continue;
-      const tab = io.sockets.sockets.get(socketId);
-      if (!tab) {
-        socketToTeacher.delete(socketId);
-        continue;
-      }
-      // Nicht an den Tab, der abmeldet: Der hat sich schon selbst
-      // zurueckgesetzt und meldet sich womoeglich gleich neu an.
-      if (tab !== socket) tab.emit('logged_out');
-      // Mit dem letzten Tab geht sie offline, und die Kollegenliste wird neu
-      // verschickt.
-      loeseVerbindung(tab);
+    let schluessel = socket.data.sitzung;
+    if (!schluessel && data && data.token) {
+      const sitzung = sitzungen.sitzung(data.token);
+      if (sitzung) schluessel = sitzung.schluessel;
     }
+    if (schluessel) beendeSitzung(schluessel, socket);
   });
 
   // Der Datensatz bleibt: die Verbindung faellt staendig kurz weg, die
@@ -708,6 +998,7 @@ function hatWeitereVerbindung(teacherId) {
 function loeseVerbindung(socket) {
   const teacherId = socketToTeacher.get(socket.id);
   socketToTeacher.delete(socket.id);
+  delete socket.data.sitzung;
   if (!teacherId) return;
 
   socket.leave(teacherId);

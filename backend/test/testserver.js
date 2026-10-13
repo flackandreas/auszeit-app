@@ -13,18 +13,25 @@ async function starteTestserver(mandanten) {
   fs.writeFileSync(process.env.AUSZEIT_DATEN, JSON.stringify({ version: 1, ...mandanten }));
 
   // Der Server protokolliert jede Verbindung - in der Testausgabe nur Rauschen.
+  // Fehlermeldungen werden gesammelt statt ausgegeben: Ein Test, der eine
+  // Ablehnung erwartet, prueft daran, dass sie aus dem richtigen Grund kam.
   const log = console.log;
+  const fehlerAusgabe = console.error;
+  const fehler = [];
   console.log = () => {};
+  console.error = (...teile) => { fehler.push(teile.join(' ')); };
 
   const { server, io } = require('../server');
   await new Promise(resolve => server.listen(0, resolve));
 
   return {
     adresse: `http://localhost:${server.address().port}`,
+    fehler,
     beenden() {
       io.close();
       fs.rmSync(ordner, { recursive: true, force: true });
       console.log = log;
+      console.error = fehlerAusgabe;
     }
   };
 }
