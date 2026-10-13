@@ -6,7 +6,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 
 ## 🚀 Hauptfunktionen
 
-- **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an (Session wird lokal gespeichert).
+- **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an. Ein geheimes Sitzungstoken bringt sie nach Verbindungsabbrüchen still in ihre Sitzung zurück (siehe [Identität und Sitzung](#identität-und-sitzung)).
 - **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3+). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
@@ -60,7 +60,11 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 auszeit-app/
 ├── backend/
 │   ├── package.json
-│   └── server.js         # Express + Socket.IO Server & In-Memory Event-Logik
+│   ├── server.js         # Express + Socket.IO Server & In-Memory Event-Logik
+│   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
+│   ├── speicher.js       # Ablage der Mandanten (daten/schulen.json)
+│   ├── admin.js          # Verwaltungsoberfläche für Mandanten
+│   └── test/             # Tests mit node:test
 ├── frontend/
 │   ├── index.html        # Single-Page HTML Struktur (Login, Dashboard, Emergency Views)
 │   ├── main.js           # Client-seitige Event-Verarbeitung & WebSocket Kommunikation
@@ -116,14 +120,27 @@ chmod +x start.sh
    ```
    *Öffnet den Vite Dev Server (standardmäßig auf `http://localhost:5173`).*
 
+### 3. Tests
+
+Aus dem Verzeichnis `backend`:
+
+```bash
+npm test
+```
+
+Die Tests laufen mit `node:test` und starten den Server auf einem freien Port;
+die Mandanten kommen dabei aus einer temporären Datei, die echte Ablage bleibt
+unberührt.
+
 ---
 
 ## 🔌 WebSocket API-Events (Socket.io)
 
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
-| `login` | Client ➔ Server | Übermittelt stabile Gerätekennung, Name und Raum. Dient auch der Wiederanmeldung nach einem Reconnect. |
-| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (Raum, Aufnahmebereitschaft, angebotene Plätze). |
+| `login` | Client ➔ Server | Zwei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – oder **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`). Eine mitgeschickte Kennung wird nicht beachtet. |
+| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft, angebotene Plätze). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
+| `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule` oder `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt). |
 | `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. |
 | `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
@@ -140,7 +157,8 @@ chmod +x start.sh
 | `request_return` | Sender ➔ Server | Meldet den Wunsch, den Schüler zurückzubekommen. Ändert den Zustand nicht. |
 | `return_requested` | Server ➔ Empfänger | Zeigt den Rückholwunsch an. |
 | `close_incident` | Client ➔ Server | Einseitiger Abschluss; nur zulässig, solange die Gegenseite offline ist. |
-| `logout` | Client ➔ Server | Meldet die Lehrkraft ab; laufende Vorfälle bleiben bestehen. |
+| `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
+| `logged_out` | Server ➔ übrige Tabs | Ein anderer Tab derselben Sitzung hat sich abgemeldet; dieser Tab kehrt zur Anmeldung zurück. |
 | `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume und die Erreichbarkeit beider Seiten. |
 
 ### Zustandsautomat eines Vorfalls
@@ -197,14 +215,17 @@ echten Namen einzugeben.
 
 Mit `pin` verlangt ein Mandant einen gemeinsamen Code (mindestens vier Zeichen;
 kuerzere werden verworfen und der Mandant laeuft ohne). Die Lehrkraft gibt ihn
-**einmalig** ein, danach liegt er im Browser und geht bei jeder Anmeldung
-stillschweigend mit - auch bei der Wiederanmeldung nach einem
-Verbindungsabbruch, die sonst jedes Mal nachfragen muesste.
+bei der **Anmeldung** ein. Der Browser behaelt ihn nur, bis die Anmeldung
+geklappt hat, und legt ihn nie im `localStorage` ab - auf einem Raum-PC waere er
+dort fuer jede Person lesbar, die nach einem an den Rechner kommt. Die
+Wiederanmeldung nach einem Verbindungsabbruch braucht ihn nicht, die erledigt
+das Sitzungstoken. Erneut gefragt wird erst nach dem Abmelden oder wenn die
+Sitzung abgelaufen ist.
 
 Einordnung, damit die Erwartung stimmt: Das ist ein **gemeinsames Geheimnis des
 Kollegiums**, vergleichbar mit einem WLAN-Schluessel - kein persoenliches
-Passwort. Er steht im Klartext in der Konfiguration, liegt im Klartext im
-Browser der Lehrkraft und identifiziert niemanden. Er haelt Fremde mit einem
+Passwort. Er steht im Klartext in der Konfiguration und identifiziert
+niemanden. Er haelt Fremde mit einem
 weitergeleiteten Link drausssen, mehr nicht. Wer Identitaeten braucht, braucht
 die naechste Stufe (Namensliste je Schule oder IServ-OIDC).
 
@@ -217,8 +238,8 @@ Zusaetzlich trennt der Server eine Verbindung nach zehn Fehlversuchen.
 
 Was die Trennung leistet: Die Liste der aufnahmebereiten Lehrkraefte geht nur
 noch an den eigenen Mandanten, und eine Verweisung ueber die Mandantengrenze
-wird abgewiesen - auch mit erratener Kennung. Eine Geraetekennung gehoert
-dauerhaft zu einer Schule.
+wird abgewiesen - auch mit erratener Kennung. Eine Sitzung gehoert dauerhaft
+zu einer Schule.
 
 ### Verwaltung
 
@@ -269,12 +290,44 @@ Alle Werte in Millisekunden, als Umgebungsvariablen des Containers:
 
 ### Identität und Sitzung
 
+Lehrkräfte hängen an einer stabilen Kennung, nicht an der `socket.id`. Die
+wechselt bei jedem Reconnect — Bildschirmsperre, Tab im Hintergrund,
+WLAN-Wechsel beim Gang durchs Gebäude. Zwischen Verweisung und Rückkehr liegen
+20 bis 45 Minuten, in denen genau das laufend passiert; an der `socket.id` wären
+die Vorfälle danach verwaist.
 
-Lehrkräfte hängen an einer stabilen Kennung aus dem `localStorage`, nicht an der
-`socket.id`. Die wechselt bei jedem Reconnect — Bildschirmsperre, Tab im
-Hintergrund, WLAN-Wechsel beim Gang durchs Gebäude. Zwischen Verweisung und
-Rückkehr liegen 20 bis 45 Minuten, in denen genau das laufend passiert; an der
-`socket.id` wären die Vorfälle danach verwaist.
+Dabei gibt es **zwei getrennte Werte**:
+
+| Wert | Wer kennt ihn | Wofür |
+| :--- | :--- | :--- |
+| Öffentliche **Kennung** | alle Lehrkräfte der Schule (Kollegenliste) | Adressiert eine Lehrkraft, etwa beim Verweisen. Kein Nachweis. |
+| Geheimes **Sitzungstoken** | nur das Gerät, das sich angemeldet hat | Weist bei der Wiederanmeldung nach, wer man ist. |
+
+Beide erzeugt der **Server** bei der Erstanmeldung. Früher erzeugte der Browser
+die Kennung selbst und zeigte sie bei der Wiederanmeldung als einzigen Nachweis
+vor – dieselbe Kennung, die jede Kollegin in der Liste sieht. Wer den
+Beitrittscode kannte, konnte so die Sitzung einer anderen Lehrkraft übernehmen.
+
+- Das Token hat 256 Bit Zufall und geht genau einmal an genau ein Gerät, nie in
+  eine Liste. Der Server speichert nur seinen SHA-256-Hash.
+- Es läuft nach fester Frist ab, gerechnet ab der Anmeldung – nicht ab der
+  letzten Benutzung. Ein Raum-PC, der den ganzen Tag neu verbindet, hält die
+  Sitzung damit nicht künstlich am Leben.
+- **Abmelden widerruft das Token** und meldet alle Tabs dieser Sitzung ab. Die
+  nächste Anmeldung auf dem Gerät ist eine neue Lehrkraft mit neuer Kennung;
+  offene Vorfälle der alten Sitzung lassen sich von der Gegenseite einseitig
+  abschließen.
+- Ist das Token abgelaufen oder unbekannt, landet die Lehrkraft in der
+  vorausgefüllten Anmeldemaske und gibt nur den Code erneut ein. Schulen ohne
+  Code werden still neu angemeldet.
+
+| Variable | Vorgabe | Bedeutung |
+| :--- | :--- | :--- |
+| `AUSZEIT_SITZUNG_TTL_MS` | 14 h | Gültigkeit eines Sitzungstokens in Millisekunden. Mindestens ein Schultag, aber nicht bis zum nächsten Morgen. |
+
+Die Tokens liegen derzeit im Arbeitsspeicher, wie alles andere auch: Nach einem
+Neustart des Servers melden sich alle Lehrkräfte neu an. Mit der dauerhaften
+Speicherung wandern sie in die Datenbank.
 
 ---
 

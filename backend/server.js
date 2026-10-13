@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const speicher = require('./speicher');
 const { erstelleAdmin, TOKEN_MINDESTLAENGE } = require('./admin');
+const { erstelleSitzungen } = require('./sitzungen');
 
 const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
 
@@ -164,15 +165,23 @@ const io = new Server(server, ERLAUBTE_HERKUNFT.length > 0
 
 // --- Datenhaltung (In-Memory) ---
 //
-// Lehrkraefte haengen an einer stabilen Kennung aus dem localStorage des
-// Browsers, nicht mehr an der socket.id. Die socket.id wechselt bei jedem
-// Reconnect - Bildschirmsperre, Tab im Hintergrund, WLAN-Wechsel beim Gang
-// durchs Gebaeude. Zwischen Hinweg und Rueckkehr eines Schuelers liegen 20 bis
-// 45 Minuten, in denen genau das laufend passiert; an der socket.id waeren die
-// Vorfaelle danach verwaist.
+// Lehrkraefte haengen an einer stabilen Kennung, nicht an der socket.id. Die
+// socket.id wechselt bei jedem Reconnect - Bildschirmsperre, Tab im
+// Hintergrund, WLAN-Wechsel beim Gang durchs Gebaeude. Zwischen Hinweg und
+// Rueckkehr eines Schuelers liegen 20 bis 45 Minuten, in denen genau das
+// laufend passiert; an der socket.id waeren die Vorfaelle danach verwaist.
+//
+// Die Kennung ist oeffentlich, sie steht in jeder Kollegenliste. Den Weg
+// zurueck in die Sitzung oeffnet deshalb nur das geheime Token (sitzungen.js).
 const teachers = new Map();        // teacherId -> Lehrkraft
 const socketToTeacher = new Map(); // socket.id -> teacherId
 const incidents = [];
+
+// Mindestens ein Schultag, damit niemand mitten im Unterricht den Code erneut
+// eingeben muss - aber nicht laenger: auf einem Raum-PC, an dem sich niemand
+// abmeldet, ist die Sitzung am naechsten Morgen sonst noch offen.
+const SITZUNG_GUELTIG_MS = dauerAusUmgebung('AUSZEIT_SITZUNG_TTL_MS', 14 * 60 * 60 * 1000);
+const sitzungen = erstelleSitzungen({ gueltigMs: SITZUNG_GUELTIG_MS });
 
 // Zustaende eines Vorfalls. Hin- und Rueckweg sind derselbe zweistufige
 // Handschlag mit vertauschten Rollen: erst "ist unterwegs", dann bestaetigt
@@ -216,12 +225,24 @@ function dauerAusUmgebung(name, vorgabe) {
   return Number.isFinite(zahl) && zahl > 0 ? zahl : vorgabe;
 }
 
-// Nur das Format, das der Client erzeugt. Haelt fremde Schluessel aus der Map
-// und begrenzt die Laenge dessen, was wir im Speicher behalten.
+// Nur das Format, das der Server fuer Kennungen erzeugt. Haelt fremde
+// Schluessel aus der Map und begrenzt die Laenge dessen, was wir annehmen.
 function normalisiereId(wert) {
   if (typeof wert !== 'string') return null;
   const id = wert.trim();
   return /^[0-9a-zA-Z_-]{8,64}$/.test(id) ? id : null;
+}
+
+// Oeffentliche Kennung einer Lehrkraft: Sie adressiert Verweisungen und steht
+// deshalb in der Kollegenliste. Der Server vergibt sie, damit kein Client eine
+// bestimmte Kennung fuer sich beanspruchen kann - frueher erzeugte der Browser
+// sie selbst und konnte also auch eine fremde vorzeigen.
+function neueKennung() {
+  let id;
+  do {
+    id = crypto.randomBytes(12).toString('base64url');
+  } while (teachers.has(id));
+  return id;
 }
 
 function text(wert, maxLaenge) {
@@ -334,11 +355,11 @@ io.on('connection', (socket) => {
   console.log('A user connected:', socket.id);
   let pinVersucheDieserVerbindung = 0;
 
-  // Anmeldung - und zugleich die Wiederanmeldung nach einem Reconnect.
+  // Anmeldung auf zwei Wegen. Mit Token nimmt eine Lehrkraft ihre Sitzung
+  // wieder auf, etwa nach einem Verbindungsabbruch - ohne Code, sonst muesste
+  // der Browser ihn dafuer aufbewahren. Ohne Token meldet sie sich neu an.
+  // Eine Kennung allein genuegt nie: die kennt jede Kollegin aus der Liste.
   socket.on('login', (data) => {
-    const name = text(data && data.name, 60);
-    if (!name) return;
-
     // Unbekannter oder fehlender Mandant: keine Anmeldung. Sonst landete die
     // Lehrkraft in einer fremden oder leeren Schule.
     const schulId = schuleAufloesen(data && data.schulId);
@@ -346,14 +367,49 @@ io.on('connection', (socket) => {
       socket.emit('login_failed', { grund: 'unbekannte_schule' });
       return;
     }
-
     const schule = SCHULEN.get(schulId);
-    const teacherIdVoraus = normalisiereId(data && data.teacherId) || socket.id;
 
-    // Stillgelegt: keine neuen Anmeldungen mehr. Wer schon drin ist, darf sich
-    // nach einem Verbindungsabbruch aber wieder verbinden - sonst verschwaende
-    // das Stilllegen laufende Auszeiten mitten in der Stunde.
-    if (!schule.aktiv && !teachers.has(teacherIdVoraus)) {
+    if (data && data.token != null) {
+      wiederanmelden(data, schule, schulId);
+    } else {
+      erstanmelden(data, schule, schulId);
+    }
+  });
+
+  function wiederanmelden(data, schule, schulId) {
+    const teacherId = sitzungen.pruefen(data.token);
+    const teacher = teacherId ? teachers.get(teacherId) : undefined;
+    // Abgelaufen, widerrufen oder nach einem Neustart unbekannt - fuer den
+    // Client laeuft alles auf dasselbe hinaus: neu anmelden.
+    if (!teacher) {
+      socket.emit('login_failed', { grund: 'sitzung_ungueltig' });
+      return;
+    }
+    // Eine Sitzung gehoert dauerhaft zu einer Schule. Wer denselben Browser an
+    // einem fremden Link benutzt, meldet sich dort eigens an.
+    if (teacher.schulId !== schulId) {
+      socket.emit('login_failed', { grund: 'kennung_fremder_schule' });
+      return;
+    }
+
+    // Aufnahmebereitschaft, Belegung und laufende Vorfaelle bleiben stehen -
+    // der Server ist die Wahrheit, nicht der alte Schalter im Browser. Nur den
+    // Raum nimmt er an: den kann die Lehrkraft geaendert haben, waehrend die
+    // Verbindung weg war. Ein stillgelegter Mandant laesst die Wiederanmeldung
+    // bewusst zu, sonst verschwaenden laufende Auszeiten mitten in der Stunde.
+    const room = text(data.room, 30);
+    if (room) teacher.room = room;
+    teacher.online = true;
+    teacher.offlineSeit = null;
+    verbinde(teacher, schule, null);
+  }
+
+  function erstanmelden(data, schule, schulId) {
+    const name = text(data && data.name, 60);
+    if (!name) return;
+
+    // Stillgelegt: keine neuen Anmeldungen mehr.
+    if (!schule.aktiv) {
       socket.emit('login_failed', { grund: 'unbekannte_schule' });
       return;
     }
@@ -374,56 +430,51 @@ io.on('connection', (socket) => {
       pinFehler.delete(schulId);
     }
 
-    const teacherId = teacherIdVoraus;
-    const room = text(data && data.room, 30);
+    // Eine mitgeschickte teacherId wird nicht mehr beachtet. Wer sich neu
+    // anmeldet, ist eine neue Lehrkraft mit eigener Kennung - auch ein
+    // aelterer Client, der noch eine Kennung aus dem Browser vorzeigt.
+    const teacher = {
+      id: neueKennung(),
+      schulId,
+      name,
+      room: text(data && data.room, 30),
+      isAvailable: false,
+      plaetze: 0,
+      betreut: [],   // ids der laufenden Vorfaelle
+      online: true,
+      offlineSeit: null
+    };
+    teachers.set(teacher.id, teacher);
+    verbinde(teacher, schule, sitzungen.ausstellen(teacher.id));
+  }
 
-    let teacher = teachers.get(teacherId);
-    if (teacher) {
-      // Wiederanmeldung: Aufnahmebereitschaft, Belegung und laufende Vorfaelle
-      // bleiben stehen. Der Server ist die Wahrheit, nicht der alte Schalter
-      // im Browser.
-      // Eine Kennung gehoert dauerhaft zu einer Schule. Wer denselben Browser
-      // an einem fremden Link benutzt, bekommt dort eine eigene Kennung.
-      if (teacher.schulId !== schulId) {
-        socket.emit('login_failed', { grund: 'kennung_fremder_schule' });
-        return;
-      }
-      teacher.name = name;
-      teacher.room = room || teacher.room;
-      teacher.online = true;
-      teacher.offlineSeit = null;
-    } else {
-      teacher = {
-        id: teacherId,
-        schulId,
-        name,
-        room,
-        isAvailable: false,
-        plaetze: 0,
-        betreut: [],   // ids der laufenden Vorfaelle
-        online: true,
-        offlineSeit: null
-      };
-      teachers.set(teacherId, teacher);
-    }
+  function verbinde(teacher, schule, token) {
+    // Derselbe Tab kann sich ein zweites Mal anmelden, etwa nach einem
+    // Doppelklick auf "Starten". Die erste Zuordnung muss dann geloest werden,
+    // sonst bliebe deren Lehrkraft ohne Verbindung fuer immer "online".
+    const vorher = socketToTeacher.get(socket.id);
+    if (vorher && vorher !== teacher.id) loeseVerbindung(socket);
 
-    socketToTeacher.set(socket.id, teacherId);
-    socket.join(teacherId);
-    socket.join(`schule:${schulId}`);
+    socketToTeacher.set(socket.id, teacher.id);
+    socket.join(teacher.id);
+    socket.join(`schule:${teacher.schulId}`);
 
     socket.emit('login_success', {
       ...oeffentlich(teacher),
       isAvailable: teacher.isAvailable,
       plaetze: teacher.plaetze,
-      schulId,
+      schulId: teacher.schulId,
       schulName: schule.name,
-      demo: schule.demo
+      demo: schule.demo,
+      // Nur bei der Erstanmeldung und nur an dieses eine Geraet - nie an den
+      // Raum der Lehrkraft, nie in eine Liste.
+      ...(token ? { token } : {})
     });
 
     broadcastAvailableTeachers(teacher.schulId);
-    syncUserIncidents(teacherId);
-    syncGegenseiten(teacherId);
-  });
+    syncUserIncidents(teacher.id);
+    syncGegenseiten(teacher.id);
+  }
 
   // Aufnahmebereitschaft, angebotene Plaetze und Raum aktualisieren.
   socket.on('update_status', (data) => {
@@ -592,39 +643,46 @@ io.on('connection', (socket) => {
     broadcastAvailableTeachers(teacher.schulId);
   });
 
-  // Abmeldung: die Lehrkraft loest ihre Kennung, bleibt aber als Datensatz
-  // bestehen, solange sie noch jemanden betreut oder ein Vorfall offen ist.
-  socket.on('logout', () => {
-    const teacher = aktuelleLehrkraft(socket);
-    socketToTeacher.delete(socket.id);
+  // Abmeldung: Das Token wird widerrufen, und zwar fuer alle Tabs dieser
+  // Sitzung - sonst bliebe auf dem Raum-PC ein zweiter Tab angemeldet, und
+  // sein naechster Reconnect fuehrte trotzdem ins Leere. Der Datensatz der
+  // Lehrkraft bleibt, solange sie noch jemanden betreut oder ein Vorfall offen
+  // ist; die Gegenseite sieht sie als nicht erreichbar und kann einseitig
+  // abschliessen.
+  socket.on('logout', (data) => {
+    // War der Tab beim Abmelden ohne Verbindung, kommt die Abmeldung erst nach
+    // dem Reconnect an - auf einem Socket, der noch keiner Lehrkraft gehoert.
+    // Dann weist das mitgeschickte Token aus, wessen Sitzung endet. Sonst
+    // bliebe es gueltig, obwohl der Browser es laengst verworfen hat.
+    const teacher = aktuelleLehrkraft(socket)
+      || teachers.get(sitzungen.pruefen(data && data.token));
     if (!teacher) return;
 
-    socket.leave(teacher.id);
+    sitzungen.widerrufeFuer(teacher.id);
     teacher.isAvailable = false;
-    if (!hatWeitereVerbindung(teacher.id)) {
-      teacher.online = false;
-      teacher.offlineSeit = Date.now();
-      syncGegenseiten(teacher.id);
+
+    for (const [socketId, teacherId] of [...socketToTeacher]) {
+      if (teacherId !== teacher.id) continue;
+      const tab = io.sockets.sockets.get(socketId);
+      if (!tab) {
+        socketToTeacher.delete(socketId);
+        continue;
+      }
+      // Nicht an den Tab, der abmeldet: Der hat sich schon selbst
+      // zurueckgesetzt und meldet sich womoeglich gleich neu an.
+      if (tab !== socket) tab.emit('logged_out');
+      // Mit dem letzten Tab geht sie offline, und die Kollegenliste wird neu
+      // verschickt.
+      loeseVerbindung(tab);
     }
-    broadcastAvailableTeachers(teacher.schulId);
   });
 
+  // Der Datensatz bleibt: die Verbindung faellt staendig kurz weg, die
+  // laufenden Vorfaelle sollen das ueberleben. Nur eine Wiederanmeldung setzt
+  // "online" wieder auf true.
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
-    const teacherId = socketToTeacher.get(socket.id);
-    socketToTeacher.delete(socket.id);
-    if (!teacherId) return;
-
-    const teacher = teachers.get(teacherId);
-    // Der Datensatz bleibt: die Verbindung faellt staendig kurz weg, die
-    // laufenden Vorfaelle sollen das ueberleben. Nur ein Reconnect setzt
-    // "online" wieder auf true.
-    if (teacher && !hatWeitereVerbindung(teacherId)) {
-      teacher.online = false;
-      teacher.offlineSeit = Date.now();
-      syncGegenseiten(teacherId);
-      broadcastAvailableTeachers(teacher.schulId);
-    }
+    loeseVerbindung(socket);
   });
 });
 
@@ -634,6 +692,26 @@ function hatWeitereVerbindung(teacherId) {
     if (id === teacherId) return true;
   }
   return false;
+}
+
+// Loest einen Socket von seiner Lehrkraft. War es ihre letzte Verbindung, gilt
+// sie als offline - die Gegenseiten ihrer Vorfaelle sehen das sofort.
+function loeseVerbindung(socket) {
+  const teacherId = socketToTeacher.get(socket.id);
+  socketToTeacher.delete(socket.id);
+  if (!teacherId) return;
+
+  socket.leave(teacherId);
+  const teacher = teachers.get(teacherId);
+  if (!teacher) return;
+  socket.leave(`schule:${teacher.schulId}`);
+
+  if (!hatWeitereVerbindung(teacherId)) {
+    teacher.online = false;
+    teacher.offlineSeit = Date.now();
+    syncGegenseiten(teacherId);
+    broadcastAvailableTeachers(teacher.schulId);
+  }
 }
 
 // Aufraeumen: Lehrkraefte, die lange offline sind und weder jemanden betreuen
@@ -694,8 +772,11 @@ const aufraeumer = setInterval(() => {
     if (!hatOffenenVorfall) {
       schulen.add(teacher.schulId);
       teachers.delete(id);
+      // Ein Token, das auf niemanden mehr zeigt, darf nicht liegenbleiben.
+      sitzungen.widerrufeFuer(id);
     }
   }
+  sitzungen.aufraeumen();
 
   for (const id of betroffen) syncUserIncidents(id);
   // Nur die Mandanten auffrischen, in denen sich wirklich etwas geaendert hat.
@@ -750,6 +831,13 @@ if (adminRouter) {
 }
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
+
+// Nur beim direkten Start lauschen. Die Tests laden den Server als Modul und
+// waehlen selbst einen freien Port.
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+  });
+}
+
+module.exports = { server, io };

@@ -506,12 +506,6 @@ input:checked + .slider:before { transform: translateX(36px); }
 }
 .demo-hinweis.hidden { display: none; }
 
-.pin-notiz {
-  margin-top: 0.4rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-}
-.pin-notiz.hidden { display: none; }
 .input-group.hidden { display: none; }
 
 .btn:disabled { opacity: 0.5; cursor: default; }

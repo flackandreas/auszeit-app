@@ -17,6 +17,8 @@ services:
       AUSZEIT_SCHULEN: ${AUSZEIT_SCHULEN:-}
       AUSZEIT_STANDARD_SCHULE: ${AUSZEIT_STANDARD_SCHULE:-}
       AUSZEIT_ORIGIN: ${AUSZEIT_ORIGIN:-}
+      # Gueltigkeit eines Sitzungstokens in Millisekunden (Vorgabe 14 h).
+      AUSZEIT_SITZUNG_TTL_MS: ${AUSZEIT_SITZUNG_TTL_MS:-}
       # Verwaltung. Ohne Token bleibt sie abgeschaltet. Mit AUSZEIT_ADMIN_PORT
       # laeuft sie auf einem eigenen, nicht veroeffentlichten Port.
       AUSZEIT_ADMIN_TOKEN: ${AUSZEIT_ADMIN_TOKEN:-}
