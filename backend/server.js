@@ -126,6 +126,15 @@ function schuleAufloesen(wunsch) {
   return SCHULEN.size === 1 ? [...SCHULEN.keys()][0] : null;
 }
 
+// Lebenszeichen fuer den Verbund. Das Portal fragt hier, ob es die Kachel
+// zeigen darf, und erwartet genau 200 mit {"status":"ok"}. Bewusst ohne
+// Version, Mandanten oder Zahlen: der Endpunkt ist ohne Anmeldung erreichbar
+// und soll nichts verraten, was bei der Suche nach Luecken hilft.
+app.get('/healthz', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ status: 'ok', modul: 'auszeit' });
+});
+
 // Erlaubt dem Client, Name und Betriebsart vor der Anmeldung zu erfragen -
 // ein falscher Link faellt so sofort auf, nicht erst nach dem Ausfuellen.
 app.get('/api/schule', (req, res) => {

@@ -1,44 +1,27 @@
 // Anmeldung und Wiederanmeldung ueber echte Socket-Verbindungen.
-//
-// Der Server wird als Modul geladen und lauscht auf einem freien Port. Die
-// Mandanten kommen aus einer eigenen Datei, damit die Tests nichts an der
-// echten Ablage veraendern.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { io: verbindeClient } = require('socket.io-client');
+const { starteTestserver } = require('./testserver');
 
-const ORDNER = fs.mkdtempSync(path.join(os.tmpdir(), 'auszeit-test-'));
-process.env.AUSZEIT_DATEN = path.join(ORDNER, 'schulen.json');
-fs.writeFileSync(process.env.AUSZEIT_DATEN, JSON.stringify({
-  version: 1,
-  standard: 'rstn',
-  schulen: {
-    rstn: { name: 'Testschule', pin: '4711' },
-    andere: { name: 'Andere Schule' }
-  }
-}));
-
-// Der Server protokolliert jede Verbindung - in der Testausgabe nur Rauschen.
-const log = console.log;
-console.log = () => {};
-const { server, io } = require('../server');
-
+let testserver;
 let adresse;
 const clients = [];
 
 test.before(async () => {
-  await new Promise(resolve => server.listen(0, resolve));
-  adresse = `http://localhost:${server.address().port}`;
+  testserver = await starteTestserver({
+    standard: 'rstn',
+    schulen: {
+      rstn: { name: 'Testschule', pin: '4711' },
+      andere: { name: 'Andere Schule' }
+    }
+  });
+  adresse = testserver.adresse;
 });
 
 test.after(() => {
   for (const client of clients) client.close();
-  io.close();
-  fs.rmSync(ORDNER, { recursive: true, force: true });
-  console.log = log;
+  testserver.beenden();
 });
 
 // Ein Tab. Ohne automatische Wiederverbindung: den Reconnect spielen die
