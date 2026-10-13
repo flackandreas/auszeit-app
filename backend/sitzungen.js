@@ -27,8 +27,11 @@ function hashe(token) {
 /**
  * @param optionen.gueltigMs  Lebensdauer eines Tokens ab der Ausstellung
  * @param optionen.jetzt      () => Millisekunden; fuer Tests austauschbar
+ * @param optionen.ablage     dauerhafte Abschrift (ablage/index.js), optional.
+ *                            Gelesen wird nur beim Start ueber laden(); im
+ *                            Betrieb ist der Speicher die Wahrheit.
  */
-function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
+function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
   // Token-Hash -> { teacherId, gueltigBis, ...angaben }. Die Angaben haengen
   // an der Sitzung, nicht an der Lehrkraft: bei der Anmeldung ueber das
   // Portal etwa dessen Sitzungskennung (sid) und das ID-Token, mit dem sich
@@ -40,7 +43,10 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
   // Rechner den ganzen Tag laeuft und staendig neu verbindet.
   function ausstellen(teacherId, angaben = {}) {
     const token = crypto.randomBytes(32).toString('base64url');
-    eintraege.set(hashe(token), { ...angaben, teacherId, gueltigBis: jetzt() + gueltigMs });
+    const schluessel = hashe(token);
+    const eintrag = { ...angaben, teacherId, gueltigBis: jetzt() + gueltigMs };
+    eintraege.set(schluessel, eintrag);
+    if (ablage) ablage.sitzungSpeichern(schluessel, eintrag);
     return token;
   }
 
@@ -53,6 +59,7 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
     if (!eintrag) return null;
     if (eintrag.gueltigBis <= jetzt()) {
       eintraege.delete(schluessel);
+      if (ablage) ablage.sitzungLoeschen(schluessel);
       return null;
     }
     return { ...eintrag, schluessel };
@@ -70,6 +77,7 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
     const eintrag = eintraege.get(schluessel);
     if (!eintrag) return null;
     eintraege.delete(schluessel);
+    if (ablage) ablage.sitzungLoeschen(schluessel);
     return { ...eintrag, schluessel };
   }
 
@@ -82,6 +90,7 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
         anzahl += 1;
       }
     }
+    if (ablage && anzahl > 0) ablage.sitzungenLoeschenFuer(teacherId);
     return anzahl;
   }
 
@@ -105,7 +114,17 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
         anzahl += 1;
       }
     }
+    if (ablage) ablage.abgelaufeneSitzungenLoeschen(grenze);
     return anzahl;
+  }
+
+  // Nach einem Neustart: die gueltigen Sitzungen aus der Ablage uebernehmen,
+  // ohne sie erneut zu schreiben.
+  function laden(zeilen) {
+    for (const zeile of zeilen) {
+      if (zeile.gueltig_bis <= jetzt()) continue;
+      eintraege.set(zeile.schluessel, { ...(zeile.angaben || {}), teacherId: zeile.kennung, gueltigBis: zeile.gueltig_bis });
+    }
   }
 
   return {
@@ -116,6 +135,7 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
     widerrufeFuer,
     schluesselWo,
     aufraeumen,
+    laden,
     get anzahl() { return eintraege.size; }
   };
 }
