@@ -1,0 +1,10 @@
+# Abhaengigkeiten installiert das Image selbst. Lokale node_modules - etwa fuer
+# die Tests - enthielten sonst Binaerdateien fuer macOS, und der Frontend-Build
+# im Alpine-Container scheiterte daran.
+**/node_modules
+frontend/dist
+
+# Laufzeitdaten gehoeren ins Volume, nicht ins Image.
+daten
+
+.git
