@@ -124,14 +124,28 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
         [z.schluessel, z.kennung, z.gueltig_bis, JSON.stringify(z.angaben || {})]
       );
     },
+    // Mit einer Sitzung enden ihre Push-Abos.
     async sitzungLoeschen(schluessel) {
       await pool.execute('DELETE FROM sitzungen WHERE schluessel = ?', [schluessel]);
+      await pool.execute('DELETE FROM push_abos WHERE sitzung = ?', [schluessel]);
     },
     async sitzungenLoeschenFuer(kennung) {
       await pool.execute('DELETE FROM sitzungen WHERE kennung = ?', [kennung]);
+      await pool.execute('DELETE FROM push_abos WHERE kennung = ?', [kennung]);
     },
     async abgelaufeneSitzungenLoeschen(jetztMs) {
       await pool.execute('DELETE FROM sitzungen WHERE gueltig_bis <= ?', [jetztMs]);
+      await pool.execute(
+        'DELETE FROM push_abos WHERE NOT EXISTS (SELECT 1 FROM sitzungen s WHERE s.schluessel = push_abos.sitzung)');
+    },
+
+    async pushAboSpeichern(z) {
+      await pool.execute(
+        'REPLACE INTO push_abos (schluessel, sitzung, kennung, endpunkt, p256dh, auth) VALUES (?, ?, ?, ?, ?, ?)',
+        [z.schluessel, z.sitzung, z.kennung, z.endpunkt, z.p256dh, z.auth]);
+    },
+    async pushAboLoeschen(schluessel) {
+      await pool.execute('DELETE FROM push_abos WHERE schluessel = ?', [schluessel]);
     },
 
     // Ein Import ist eine Einheit: entweder steht die ganze Liste oder keine
@@ -170,9 +184,13 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
              OR l.kennung IN (?)`,
         [jetztMs, ['', ...vorfaelle.flatMap(v => [v.sender_kennung, v.empfaenger_kennung])]]);
       const [schueler] = await pool.query('SELECT * FROM schueler');
+      const [pushAbos] = await pool.query(
+        `SELECT a.schluessel, a.sitzung, a.kennung, a.endpunkt, a.p256dh, a.auth FROM push_abos a
+           JOIN sitzungen s ON s.schluessel = a.sitzung AND s.gueltig_bis > ?`, [jetztMs]);
       return {
         lehrkraefte,
         schueler,
+        pushAbos,
         sitzungen: sitzungen.map(s => ({
           ...s,
           gueltig_bis: Number(s.gueltig_bis),

@@ -1,17 +1,18 @@
 {
+  "id": "/",
   "name": "SchulOS Auszeit-Betreuung",
   "short_name": "Auszeit",
   "description": "Kurzzeitige Betreuung zwischen Kolleginnen und Kollegen – ein Modul von SchulOS",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#f0fdf4",
   "theme_color": "#b45309",
   "icons": [
-    {
-      "src": "/favicon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
-    }
+    { "src": "/icons/auszeit-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/auszeit-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/auszeit-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/auszeit-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }

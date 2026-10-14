@@ -75,6 +75,17 @@ function umWarteschlange(impl) {
       return einreihen(`Schuelerliste (${zeilen.length} Eintraege)`, () => impl.schuelerSpeichern(zeilen));
     },
 
+    pushAboSpeichern(abo) {
+      const zeile = {
+        schluessel: abo.schluessel, sitzung: abo.sitzung, kennung: abo.kennung,
+        endpunkt: abo.endpunkt, p256dh: abo.p256dh, auth: abo.auth
+      };
+      return einreihen('Push-Abo', () => impl.pushAboSpeichern(zeile));
+    },
+    pushAboLoeschen(schluessel) {
+      return einreihen('Ende eines Push-Abos', () => impl.pushAboLoeschen(schluessel));
+    },
+
     vorfallSpeichern(vorfall) {
       const zeile = vorfallZeile(vorfall);
       return einreihen(`Vorfall ${zeile.id}`, () => impl.vorfallSpeichern(zeile));

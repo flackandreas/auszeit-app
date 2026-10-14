@@ -12,6 +12,7 @@ const { konfigurationAusUmgebung, erstellePortal } = require('./portal');
 const { standardAblage } = require('./ablage');
 const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile } = require('./ablage/zeilen');
 const { zerlegeListe, planeImport, vergleicheSchueler, anzeige } = require('./schueler');
+const { pushKonfiguration, erstellePush, abonnementPruefen, aboSchluessel, NACHRICHTEN } = require('./push');
 const { stichtagAus, schuljahrVon, schuljahrText } = require('./schuljahr');
 
 const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
@@ -160,7 +161,10 @@ app.get('/api/schule', (req, res) => {
     demo: schule.demo,
     pinNoetig: Boolean(schule.pin) && !PORTAL.nurPortal,
     portal: Boolean(portal),
-    nurPortal: PORTAL.nurPortal
+    nurPortal: PORTAL.nurPortal,
+    // Der oeffentliche VAPID-Schluessel - ohne ihn kann der Browser kein Abo
+    // anlegen. Er ist oeffentlich; der private bleibt auf dem Server.
+    pushSchluessel: push ? push.oeffentlich : null
   });
 });
 
@@ -263,6 +267,22 @@ if (portal) {
 // vergessenes Geheimnis oeffnete sonst die Tuer fuer jede und jeden.
 if (PORTAL.nurPortal && !portal) {
   console.error('PORTAL_NUR_SSO=1, aber die Portal-Anbindung ist aus - niemand kann sich anmelden.');
+}
+
+// --- Web Push ---
+//
+// Ohne VAPID-Schluessel gibt es keine Benachrichtigungen, nur Overlay und
+// Vibration bei offener App - wie bisher. Siehe push.js.
+const PUSH = pushKonfiguration();
+const push = PUSH.aktiv ? erstellePush(PUSH) : null;
+// Abos je Geraet, an einer Sitzung haengend. Ist die Sitzung vorbei, zaehlt
+// das Abo nicht mehr; das Aufraeumen nimmt es dann aus dem Speicher.
+const pushAbos = new Map(); // schluessel -> { sitzung, kennung, endpunkt, p256dh, auth }
+
+if (PUSH.fehlend.length > 0) {
+  console.error(`Web Push unvollstaendig eingerichtet, es fehlt: ${PUSH.fehlend.join(', ')} - Benachrichtigungen sind aus.`);
+} else if (!push) {
+  console.log('Web Push aus (keine VAPID-Schluessel) - Alarm nur bei offener App.');
 }
 
 // Zustaende eines Vorfalls. Hin- und Rueckweg sind derselbe zweistufige
@@ -414,8 +434,29 @@ function freiePlaetze(teacher) {
   return Math.max(0, teacher.plaetze - teacher.betreut.length);
 }
 
+// Ein gesperrtes Handy hat keine Verbindung - mobile Browser trennen sie nach
+// kurzer Zeit. Wer Benachrichtigungen eingeschaltet hat, ist trotzdem
+// erreichbar: Der Push weckt das Handy.
+function hatPushAbo(teacherId) {
+  for (const abo of pushAbos.values()) {
+    if (abo.kennung === teacherId && sitzungen.gueltig(abo.sitzung)) return true;
+  }
+  return false;
+}
+
+function istErreichbar(teacher) {
+  return Boolean(teacher) && (teacher.online || hatPushAbo(teacher.id));
+}
+
+// Wie lange die Aufnahmebereitschaft ohne Verbindung haelt. Nicht unbegrenzt:
+// Wer mit eingeschaltetem Schalter die Schule verlaesst, soll am Nachmittag
+// keine Schueler mehr bekommen. Eine Doppelstunde.
+const BEREIT_OHNE_VERBINDUNG_MS = dauerAusUmgebung('AUSZEIT_BEREIT_OHNE_VERBINDUNG_MS', 90 * 60 * 1000);
+
 function istAufnahmebereit(teacher) {
-  return teacher.online && teacher.isAvailable && freiePlaetze(teacher) > 0;
+  if (!teacher.isAvailable || freiePlaetze(teacher) <= 0) return false;
+  if (teacher.online) return true;
+  return hatPushAbo(teacher.id) && Date.now() - (teacher.offlineSeit || 0) < BEREIT_OHNE_VERBINDUNG_MS;
 }
 
 // Nach aussen geht nur, was die Liste braucht - nicht die Belegungsliste.
@@ -440,8 +481,11 @@ function fuerClient(incident) {
     ...incident,
     senderRaum: sender && sender.online ? sender.room : incident.senderRaum,
     receiverRaum: receiver && receiver.online ? receiver.room : incident.receiverRaum,
-    senderOnline: Boolean(sender && sender.online),
-    receiverOnline: Boolean(receiver && receiver.online)
+    // "Online" heisst fuer die Gegenseite: erreichbar - verbunden oder per
+    // Push. Daran haengen der Hinweis "nicht erreichbar" und der einseitige
+    // Abschluss.
+    senderOnline: istErreichbar(sender),
+    receiverOnline: istErreichbar(receiver)
   };
 }
 
@@ -690,6 +734,51 @@ app.get('/api/sitzung', (req, res) => {
   if (!teacher) return res.status(401).json({ fehler: 'keine_sitzung' });
   res.json({ name: teacher.name, kuerzel: teacher.kuerzel, raum: teacher.room });
 });
+
+// --- Benachrichtigungen ---
+
+// Hat die Lehrkraft gerade eine Verbindung, deren App im Vordergrund ist? Dann
+// sieht sie das Overlay, und ein zusaetzlicher Push waere nur doppelt. Was ein
+// Tab nicht gemeldet hat, gilt als nicht sichtbar: Lieber einmal zu viel
+// benachrichtigt als einen Schueler verpasst.
+function hatSichtbareVerbindung(teacherId) {
+  for (const [socketId, id] of socketToTeacher) {
+    if (id !== teacherId) continue;
+    const tab = io.sockets.sockets.get(socketId);
+    if (tab && tab.data.sichtbar) return true;
+  }
+  return false;
+}
+
+// Wohin ein Tipp auf die Benachrichtigung fuehrt: zur Anwendung dieser Schule.
+function adresseDerSchule(schulId) {
+  return schulId === standardSchule ? '/' : `/s/${schulId}`;
+}
+
+function benachrichtige(teacherId, art, vorfall) {
+  if (!push || hatSichtbareVerbindung(teacherId)) return;
+  const teacher = teachers.get(teacherId);
+  if (!teacher) return;
+  const nachricht = {
+    ...NACHRICHTEN[art],
+    art,
+    // Gleicher Vorfall, gleiche Kennung: Eine neue Benachrichtigung ersetzt
+    // die alte, statt sich darunter zu stapeln.
+    tag: vorfall.id,
+    ziel: adresseDerSchule(teacher.schulId)
+  };
+  for (const abo of pushAbos.values()) {
+    if (abo.kennung !== teacherId || !sitzungen.gueltig(abo.sitzung)) continue;
+    push.sende(abo, nachricht, vorfall.id).then(ergebnis => {
+      // Der Dienst kennt das Abo nicht mehr - etwa weil die App vom
+      // Home-Bildschirm entfernt wurde.
+      if (ergebnis === 'weg') {
+        pushAbos.delete(abo.schluessel);
+        ablage.pushAboLoeschen(abo.schluessel);
+      }
+    });
+  }
+}
 
 // Beim Handshake das Sitzungscookie lesen. Damit steht serverseitig fest, wer
 // die Lehrkraft ist; der Client kann es nicht behaupten.
@@ -961,6 +1050,7 @@ io.on('connection', (socket) => {
     receiver.betreut.push(incident.id);
 
     io.to(receiver.id).emit('incoming_student', fuerClient(incident));
+    benachrichtige(receiver.id, 'kommt', incident);
     socket.emit('help_requested', { success: true, incident: fuerClient(incident) });
 
     syncUserIncidents(sender.id);
@@ -1004,6 +1094,7 @@ io.on('connection', (socket) => {
 
     const angereichert = fuerClient(incident);
     io.to(incident.senderId).emit('student_returning', angereichert);
+    benachrichtige(incident.senderId, 'zurueck', incident);
     socket.emit('send_back_ok', angereichert);
 
     syncUserIncidents(incident.senderId);
@@ -1045,6 +1136,7 @@ io.on('connection', (socket) => {
     ablage.vorfallSpeichern(incident);
 
     io.to(incident.receiverId).emit('return_requested', fuerClient(incident));
+    benachrichtige(incident.receiverId, 'rueckholwunsch', incident);
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
   });
@@ -1063,7 +1155,7 @@ io.on('connection', (socket) => {
     if (ABGESCHLOSSEN.has(incident.status)) return;
 
     const gegenseite = teachers.get(binSender ? incident.receiverId : incident.senderId);
-    if (gegenseite && gegenseite.online) return;
+    if (istErreichbar(gegenseite)) return;
 
     incident.status = ABGEBROCHEN;
     incident.beendetAm = new Date();
@@ -1077,6 +1169,42 @@ io.on('connection', (socket) => {
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
     broadcastAvailableTeachers(teacher.schulId);
+  });
+
+  // --- Benachrichtigungen ---
+
+  // Der Client meldet, ob die App gerade im Vordergrund ist.
+  socket.on('sichtbarkeit', (data) => {
+    socket.data.sichtbar = Boolean(data && data.sichtbar);
+  });
+
+  // Ein Abo anlegen oder - nach einer neuen Anmeldung auf demselben Geraet -
+  // an die neue Sitzung haengen.
+  socket.on('push_abo', (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = aktuelleLehrkraft(socket);
+    if (!push) return antwort({ ok: false, grund: 'aus' });
+    if (!teacher || !socket.data.sitzung) return antwort({ ok: false, grund: 'nicht_angemeldet' });
+    const abo = abonnementPruefen(data, push.dienste);
+    if (!abo) return antwort({ ok: false, grund: 'ungueltig' });
+
+    const eintrag = { schluessel: aboSchluessel(abo.endpunkt), sitzung: socket.data.sitzung, kennung: teacher.id, ...abo };
+    pushAbos.set(eintrag.schluessel, eintrag);
+    ablage.pushAboSpeichern(eintrag);
+    antwort({ ok: true });
+  });
+
+  // Benachrichtigungen auf diesem Geraet aus.
+  socket.on('push_abmelden', (data, antwort) => {
+    const teacher = aktuelleLehrkraft(socket);
+    const endpunkt = data && typeof data.endpoint === 'string' ? data.endpoint : '';
+    const abo = endpunkt ? pushAbos.get(aboSchluessel(endpunkt)) : undefined;
+    // Nur das eigene - sonst liesse sich fremden Geraeten der Alarm abschalten.
+    if (abo && teacher && abo.kennung === teacher.id) {
+      pushAbos.delete(abo.schluessel);
+      ablage.pushAboLoeschen(abo.schluessel);
+    }
+    if (typeof antwort === 'function') antwort({ ok: true });
   });
 
   // --- Schuelerliste einfuegen ---
@@ -1302,6 +1430,17 @@ function raeumeAuf(jetzt = Date.now()) {
   }
   sitzungen.aufraeumen();
   ablage.verwaisteLehrkraefteLoeschen(jetzt);
+  // Abos abgelaufener Sitzungen; aus der Ablage nimmt sie das Ende der
+  // Sitzung selbst mit.
+  for (const [schluessel, abo] of pushAbos) {
+    if (!sitzungen.gueltig(abo.sitzung)) pushAbos.delete(schluessel);
+  }
+
+  // Ist die Bereitschaft einer Lehrkraft ohne Verbindung abgelaufen, soll sie
+  // auch aus den Listen der anderen verschwinden.
+  for (const teacher of teachers.values()) {
+    if (!teacher.online && teacher.isAvailable && !istAufnahmebereit(teacher)) schulen.add(teacher.schulId);
+  }
 
   for (const id of betroffen) syncUserIncidents(id);
   // Nur die Mandanten auffrischen, in denen sich wirklich etwas geaendert hat.
@@ -1350,8 +1489,9 @@ if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
 // Lehrkraefte, ihre gueltigen Sitzungen und die Vorfaelle, die noch laufen
 // oder heute beendet wurden. Die Belegung ist kein eigener Zustand - sie folgt
 // aus den Vorfaellen, die unterwegs oder in Betreuung sind.
-function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle, schueler = [] }) {
+function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle, schueler = [], pushAbos: abos = [] }) {
   for (const zeile of lehrkraefte) teachers.set(zeile.kennung, lehrkraftAusZeile(zeile));
+  for (const abo of abos) pushAbos.set(abo.schluessel, { ...abo });
   for (const zeile of schueler) schuelerListe.set(zeile.kennung, schuelerAusZeile(zeile));
   sitzungen.laden(sitzungsZeilen);
   let belegt = 0;

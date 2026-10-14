@@ -65,6 +65,13 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
     return { ...eintrag, schluessel };
   }
 
+  // Gilt die Sitzung mit diesem Schluessel noch? Fuer alles, was an einer
+  // Sitzung haengt, ohne ihr Token zu kennen - etwa ein Push-Abo.
+  function gueltig(schluessel) {
+    const eintrag = eintraege.get(schluessel);
+    return Boolean(eintrag && eintrag.gueltigBis > jetzt());
+  }
+
   // Liefert die Kennung der Lehrkraft oder null.
   function pruefen(token) {
     const gefunden = sitzung(token);
@@ -130,6 +137,7 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
   return {
     ausstellen,
     sitzung,
+    gueltig,
     pruefen,
     widerrufen,
     widerrufeFuer,

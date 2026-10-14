@@ -6,6 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#f0fdf4" />
     <link rel="manifest" href="/manifest.json" />
+    <!-- iPhone und iPad: Benachrichtigungen gibt es dort nur fuer Apps auf
+         dem Home-Bildschirm (ab iOS 16.4). Dafuer braucht es ein PNG-Symbol. -->
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Auszeit" />
     <title>Auszeit-Betreuung · SchulOS</title>
     <link rel="stylesheet" href="/fonts.css">
     <link rel="stylesheet" href="/style.css">
@@ -115,6 +120,15 @@
             <!-- Belegung: macht sichtbar, warum man trotz gruenem Schalter
                  nicht mehr in der Liste der anderen auftaucht. -->
             <div id="belegung" class="belegung hidden"></div>
+          </div>
+
+          <!-- Benachrichtigungen: der Alarm, wenn Auszeit nicht offen ist. -->
+          <div id="push-karte" class="glass-card push-karte hidden">
+            <div class="push-zeile">
+              <span id="push-status" class="push-status"></span>
+              <button id="btn-push" class="btn btn-klein hidden" type="button">Einschalten</button>
+            </div>
+            <p id="push-hinweis" class="liste-hinweis hidden"></p>
           </div>
 
           <!-- Aktuelle Vorfälle -->

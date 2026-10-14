@@ -13,6 +13,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
   - Im Schulbetrieb Auswahl aus der Schülerliste: Klasse ist vorausgewählt, Schüler antippen, Kollegin antippen – zwei Tipps (siehe [Schülerliste](#schülerliste)). Ohne Portal und bei Demo-Mandanten ein freies Namensfeld.
   - Direktes Absenden der Auszeit-Anforderung per Klick.
+- **Benachrichtigungen (Web Push)**: Auch bei gesperrtem Bildschirm kommt der Alarm aufs Handy – ohne Schülernamen. Auf iPhone und iPad, sobald Auszeit auf dem Home-Bildschirm liegt (siehe [Benachrichtigungen](#benachrichtigungen)).
 - **Sofort-Benachrichtigung & Ankunftsbestätigung**:
   - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration.
   - Per Klick ("Schüler ist angekommen") wird der Empfang bestätigt.
@@ -67,6 +68,7 @@ auszeit-app/
 │   ├── migrationen/      # Datenbankschema, beim Start eingespielt
 │   ├── schuljahr.js      # Schuljahr eines Zeitpunkts, Stichtag
 │   ├── schueler.js       # Schülerliste: Zeilen zerlegen, Abgleich mit dem Bestand
+│   ├── push.js           # Web Push: Konfiguration, Prüfung der Abos, Versand
 │   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
 │   ├── portal.js         # Anmeldung über das SchulOS-Portal (OpenID Connect)
 │   ├── kekse.js          # Cookies lesen – für Routen und Socket-Handshake
@@ -76,6 +78,8 @@ auszeit-app/
 ├── frontend/
 │   ├── index.html        # Single-Page HTML Struktur (Login, Dashboard, Emergency Views)
 │   ├── main.js           # Client-seitige Event-Verarbeitung & WebSocket Kommunikation
+│   ├── public/sw.js      # Service Worker: zeigt Benachrichtigungen
+│   ├── public/icons/     # App-Symbol für den Home-Bildschirm (192, 512, Apple)
 │   ├── style.css         # Modernes Stylesheet mit Responsive- & Darkmode-Designs
 │   └── package.json
 ├── start.sh              # Bash-Skript zum parallelen Starten von Backend und Frontend
@@ -185,6 +189,9 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `request_return` | Sender ➔ Server | Meldet den Wunsch, den Schüler zurückzubekommen. Ändert den Zustand nicht. |
 | `return_requested` | Server ➔ Empfänger | Zeigt den Rückholwunsch an. |
 | `close_incident` | Client ➔ Server | Einseitiger Abschluss; nur zulässig, solange die Gegenseite offline ist. |
+| `sichtbarkeit` | Client ➔ Server | Ob die App gerade im Vordergrund ist. Nur ohne sichtbare Verbindung gibt es eine Benachrichtigung. |
+| `push_abo` | Client ➔ Server (mit Rückmeldung) | Hängt das Push-Abo dieses Geräts an die laufende Sitzung. |
+| `push_abmelden` | Client ➔ Server (mit Rückmeldung) | Benachrichtigungen auf diesem Gerät aus. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
 | `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. |
 | `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume und die Erreichbarkeit beider Seiten. |
@@ -338,6 +345,7 @@ Tabellen:
 | :--- | :--- |
 | `lehrkraefte` | Kennung, Schule, `sub` bei Anmeldung über das Portal, Name, Kürzel, Raum, Rolle „Verwaltung“ |
 | `sitzungen` | Hash des Tokens, Kennung, Ablauf, bei Portal-Anmeldung `sid` und ID-Token |
+| `push_abos` | Je Gerät: Hash der Adresse, Sitzung, Kennung, Adresse und Schlüssel des Push-Dienstes. Endet mit der Sitzung. |
 | `schueler` | Schuljahr, Klasse, Vor- und Nachname, normalisierter Schlüssel, Zeitpunkt der Archivierung |
 | `vorfaelle` | Schuljahr, Schüler (Kennung aus der Liste, nur bei Freitext ein Name), abgebende und aufnehmende Lehrkraft samt Raum, Zustand, je Zustandswechsel ein Zeitpunkt (`angefordert_am`, `angekommen_am`, `rueckholwunsch_am`, `zurueckgeschickt_am`, `zurueck_am`, `beendet_am`), Art des Abschlusses (`zurueck`, `einseitig`, `abgebrochen`) |
 
@@ -408,6 +416,88 @@ Schüler wieder auf, kommt er mit derselben Kennung zurück.
 
 Die Liste gehört zum Schuljahr: Zum Schuljahreswechsel fällt sie mit dem
 Protokoll weg. Eingefügt wird sie deshalb nach dem Stichtag.
+
+### Benachrichtigungen
+
+Lehrkräfte tragen Handy und Tablet bei sich, nicht einen offenen Tab. Ein
+Alarm, der nur bei offener App ankommt, wird verpasst. Deshalb gibt es Web
+Push: Die Benachrichtigung kommt auch bei gesperrtem Bildschirm. Overlay und
+Vibration bei geöffneter App bleiben.
+
+**Wann.** Bei einem Schüler auf dem Weg (an die aufnehmende Lehrkraft), beim
+Zurückschicken (an die abgebende) und beim Rückholwunsch (an die aufnehmende).
+Nur wenn die Lehrkraft gerade **keine sichtbare Verbindung** hat – der Client
+meldet, ob die App im Vordergrund ist; sonst reicht das Overlay.
+
+**Was drin steht.** Nur, dass etwas zu tun ist („Schüler auf dem Weg zu dir“),
+**nie ein Schülername** und auch kein Lehrername: Push läuft über Server von
+Apple, Google, Mozilla oder Microsoft. Ein Tipp öffnet Auszeit, die App lädt
+die Einzelheiten über ihre eigene Verbindung und zeigt die offene Bestätigung
+an. Eine Benachrichtigung gilt zehn Minuten; zum selben Vorfall ersetzt eine
+neue die alte.
+
+**Erreichbar ohne Verbindung.** Mobile Browser trennen die Verbindung kurz nach
+dem Sperren. Wer Benachrichtigungen eingeschaltet hat, bleibt trotzdem
+aufnahmebereit – der Push weckt das Handy –, aber nicht unbegrenzt: nach
+`AUSZEIT_BEREIT_OHNE_VERBINDUNG_MS` (Vorgabe 90 Minuten, eine Doppelstunde)
+fällt sie aus der Liste. Wer mit eingeschaltetem Schalter die Schule verlässt,
+bekommt am Nachmittag keine Schüler mehr. Für die Gegenseite gilt eine solche
+Lehrkraft als erreichbar; den einseitigen Abschluss gibt es erst, wenn sie
+weder verbunden noch per Push erreichbar ist.
+
+**Einschalten** nur auf einen Tipp hin („Benachrichtigungen – Einschalten“ im
+Dashboard): iOS verlangt dafür eine Handlung, und eine Frage beim Laden der
+Seite wird ohnehin weggeklickt. Ein Abo gilt **je Gerät und hängt an der
+Sitzung**: Abmelden, Abmeldung im Portal oder Ablauf der Sitzung beenden es;
+beim Abmelden kündigt auch der Browser es. Auf einem Raum-PC bekommt so
+niemand die Alarme der Person vor ihm. Meldet der Push-Dienst ein Abo als
+erloschen (404/410), verschwindet es.
+
+**iPhone und iPad** können Benachrichtigungen nur für Apps auf dem
+Home-Bildschirm (ab iOS 16.4). Erkennt Auszeit ein iPhone oder iPad im
+Safari-Tab, zeigt es statt des Schalters die Anleitung: „Teilen“ → „Zum
+Home-Bildschirm“, dann Auszeit von dort öffnen. Dafür liegen ein
+`apple-touch-icon` und Symbole in 192 und 512 Pixeln bei.
+
+**Nur an bekannte Push-Dienste.** Ein Abo ist eine Adresse, die ein Gerät nennt.
+Der Server schickt nur an die Dienste von Google, Apple, Mozilla und Microsoft
+– sonst könnte ein angemeldetes Konto eine Adresse im Hausnetz eintragen, und
+der Server riefe sie auf.
+
+| Variable | Bedeutung |
+| :--- | :--- |
+| `AUSZEIT_VAPID_PUBLIC` / `AUSZEIT_VAPID_PRIVATE` | Schlüsselpaar des Servers. **Ohne sie ist Push aus**, der Alarm kommt nur bei offener App. |
+| `AUSZEIT_VAPID_SUBJECT` | Kontakt für die Push-Dienste, `mailto:…` oder `https://…` |
+| `AUSZEIT_BEREIT_OHNE_VERBINDUNG_MS` | Wie lange die Aufnahmebereitschaft ohne Verbindung hält, Vorgabe 90 Minuten |
+
+Schlüssel einmalig erzeugen und beide Werte in die `.env` eintragen:
+
+```bash
+docker run --rm node:20-alpine npx -y web-push@3.6.7 generate-vapid-keys
+```
+
+Der private Schlüssel bleibt auf dem Server. Wechselt er, müssen alle
+Lehrkräfte die Benachrichtigungen neu einschalten.
+
+**Push braucht HTTPS** – auf dem eigenen Rechner reicht `http://localhost`, an
+der Schule läuft es über den Tunnel.
+
+#### Abnahme auf echten Geräten
+
+Automatisch geprüft ist, wer wann welche Nachricht bekommt (`npm test`).
+Ob sie bei gesperrtem Bildschirm ankommt, lässt sich nur auf echten Geräten
+prüfen – über den Tunnel, weil Push HTTPS braucht:
+
+1. **iPhone:** Auszeit in Safari öffnen, „Teilen“ → „Zum Home-Bildschirm“, die
+   App vom Home-Bildschirm starten, anmelden, „Benachrichtigungen –
+   Einschalten“, erlauben. Schalter „Bereit zur Aufnahme“ an, Bildschirm sperren.
+2. **Android:** Auszeit in Chrome öffnen (oder installieren), anmelden,
+   einschalten, erlauben, bereit melden, Bildschirm sperren.
+3. Von einem dritten Gerät aus einen Schüler zu jedem der beiden schicken.
+4. Erwartet: Benachrichtigung „Schüler auf dem Weg zu dir“ auf dem gesperrten
+   Bildschirm, ohne Namen. Ein Tipp öffnet Auszeit mit „Schüler ist
+   angekommen“.
+5. Zurückschicken und Rückholwunsch genauso prüfen.
 
 ### Aufbewahrung
 

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- App-Symbol fuer den Home-Bildschirm: die Bildmarke aus favicon.svg,
+       randlos und mit Abstand. Android schneidet "maskable" Symbole rund zu,
+       iOS rundet die Ecken selbst - die Marke bleibt im sicheren Bereich. -->
+  <rect width="512" height="512" fill="#f0fdf4"/>
+  <g transform="translate(64 64) scale(12)">
+    <path d="M16 6L5.5 11.2L16 16.4L26.5 11.2L16 6Z" fill="#4f46e5"/>
+    <path d="M5.5 15V20.6L16 25.8L26.5 20.6V15L16 20.2L5.5 15Z" fill="#4f46e5" opacity="0.55"/>
+  </g>
+</svg>
