@@ -226,8 +226,8 @@ function erstellePortal(konfiguration) {
     const konfig = await server();
 
     // Die Adresse, wie sie im Browser stand. Aus der Konfiguration statt aus
-    // Host- und Proto-Kopf: hinter Caddy und Cloudflare sagen die nicht
-    // verlaesslich, was der Browser gesehen hat.
+    // Host- und Proto-Kopf: hinter Caddy, IServ oder einem Tunnel sagen die
+    // nicht verlaesslich, was der Browser gesehen hat.
     const rueckweg = new URL(konfiguration.rueckadresse);
     rueckweg.search = suche || '';
 

@@ -20,9 +20,10 @@ const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
 const app = express();
 app.use(express.json());
 
-// Vor Auszeit stehen Caddy und im Betrieb Cloudflare. Vertraut wird nur
-// Proxys aus dem eigenen Netz - einem Absender aus dem Internet glaubt Express
-// keinen X-Forwarded-For-Kopf.
+// Vor Auszeit steht immer ein Vermittler: Caddy im Verbund, die
+// IServ-Weiterleitung in der Schule, ein Tunnel auf dem Demo-Pi. Vertraut wird
+// nur Proxys aus dem eigenen Netz - einem Absender aus dem Internet glaubt
+// Express keinen X-Forwarded-For-Kopf.
 app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
 // --- Mandanten ---
