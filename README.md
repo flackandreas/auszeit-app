@@ -134,6 +134,10 @@ chmod +x start.sh
 
 ### 3. Tests
 
+Jeder Pull Request wird auf GitHub geprüft (`.github/workflows/pruefung.yml`):
+dieselben Tests mit Node 20 und dazu der Bau des Frontends. Das Ergebnis steht
+als Haken oder Kreuz im Pull Request.
+
 Aus dem Verzeichnis `backend`:
 
 ```bash
