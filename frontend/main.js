@@ -18,7 +18,6 @@ const inputRoom = document.getElementById('teacher-room');
 const btnLogin = document.getElementById('btn-login');
 const pinGruppe = document.getElementById('pin-gruppe');
 const inputPin = document.getElementById('schul-pin');
-const pinNotiz = document.getElementById('pin-notiz');
 
 // Dashboard Elements
 const displayName = document.getElementById('display-name');
@@ -133,50 +132,59 @@ function schulcodeAusAdresse() {
 
 const SCHULCODE = schulcodeAusAdresse();
 
-// Stabile Kennung des Geraets. Sie ueberlebt Reconnects und das Schliessen des
-// Tabs - anders als die socket.id, an der die Vorfaelle frueher hingen.
+// Sitzungsnachweis dieses Geraets. Der Server stellt das Token bei der
+// Anmeldung aus; damit kommt der Tab nach einem Reconnect wieder in seine
+// Sitzung. Frueher erzeugte der Browser stattdessen selbst eine Kennung und
+// zeigte sie als Nachweis vor - dieselbe Kennung, die jede Kollegin in der
+// Liste der aufnahmebereiten Lehrkraefte sieht.
 //
 // Der Schluessel haengt am Mandanten: wer denselben Browser am Link einer
-// anderen Schule benutzt, bekommt dort eine eigene Kennung. Sonst truege er
-// seine Kennung ueber die Grenze, und der Server wiese ihn ab.
-function kennungsSchluessel() {
-  return `auszeit_teacher_id${SCHULCODE ? ':' + SCHULCODE : ''}`;
+// anderen Schule benutzt, meldet sich dort eigens an.
+function tokenSchluessel() {
+  return `auszeit_token${SCHULCODE ? ':' + SCHULCODE : ''}`;
 }
 
-// Der Code liegt im Browser und geht bei jeder Anmeldung mit. Das ist noetig,
-// weil die stille Wiederanmeldung nach einem Verbindungsabbruch sonst jedes Mal
-// nachfragen muesste - und der Code ist ein gemeinsamer Beitrittscode des
-// Kollegiums, kein persoenliches Passwort.
-function pinSchluessel() {
-  return `auszeit_pin${SCHULCODE ? ':' + SCHULCODE : ''}`;
-}
-
-function gemerkterPin() {
-  return localStorage.getItem(pinSchluessel()) || '';
-}
-
+// Name und Raum, nur zum Vorbelegen der Anmeldemaske. Sie weisen nichts nach.
 function sitzungsSchluessel() {
   return `auszeit_user${SCHULCODE ? ':' + SCHULCODE : ''}`;
 }
 
-function meineKennung() {
-  const schluessel = kennungsSchluessel();
-  let id = localStorage.getItem(schluessel);
-  if (!id) {
-    id = (crypto && typeof crypto.randomUUID === 'function')
-      ? crypto.randomUUID()
-      : `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(schluessel, id);
+function gespeicherteAngaben() {
+  try {
+    return JSON.parse(localStorage.getItem(sitzungsSchluessel()) || 'null');
+  } catch (err) {
+    return null;
   }
-  return id;
 }
+
+// Der Beitrittscode bleibt nur bis zur erfolgreichen Anmeldung in der Seite,
+// nie im Browser. Frueher lag er dauerhaft im localStorage - auf einem Raum-PC
+// fuer jede Person lesbar, die nach einem an den Rechner kommt. Die
+// Wiederanmeldung nach einem Verbindungsabbruch braucht ihn nicht mehr, die
+// erledigt das Token.
+let anmeldePin = '';
+
+// Aeltere Versionen haben Code und Kennung dauerhaft abgelegt. Beides
+// verschwindet hier. Den Code dieser Schule nimmt die Seite ein letztes Mal
+// fuer die Anmeldung mit, damit nach dem Update niemand nachfragen muss.
+(function altlastenEntfernen() {
+  const alterPin = localStorage.getItem(`auszeit_pin${SCHULCODE ? ':' + SCHULCODE : ''}`);
+  if (alterPin) anmeldePin = alterPin;
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const schluessel = localStorage.key(i) || '';
+    if (schluessel.startsWith('auszeit_pin') || schluessel.startsWith('auszeit_teacher_id')) {
+      localStorage.removeItem(schluessel);
+    }
+  }
+})();
 
 // Falscher Link oder Kennung aus einer anderen Schule: klar sagen, statt die
 // Person raten zu lassen, warum keine Kollegen erscheinen.
 const ABWEISUNG = {
   pin_falsch: 'Der Code stimmt nicht. Bitte beim Kollegium nachfragen.',
   unbekannte_schule: 'Dieser Link gehört zu keiner eingerichteten Schule. Bitte den Link der eigenen Schule verwenden.',
-  kennung_fremder_schule: 'Dieses Gerät ist bereits bei einer anderen Schule angemeldet.'
+  kennung_fremder_schule: 'Dieses Gerät ist bereits bei einer anderen Schule angemeldet.',
+  sitzung_ungueltig: 'Die Anmeldung ist abgelaufen. Bitte den Code der Schule erneut eingeben.'
 };
 
 function zeigeSchule(daten) {
@@ -190,21 +198,12 @@ function zeigeSchule(daten) {
 
 let pinNoetig = false;
 
-// Sichtbar, sobald die Schule einen Code verlangt - unabhaengig davon, ob
-// schon einer gemerkt ist. Frueher blieb das Feld bei gemerktem Code weg; wer
-// erfuhr, dass die Schule den Code gewechselt hat, fand dann keine Stelle, ihn
-// einzugeben, und musste erst absichtlich scheitern.
-//
-// Leer lassen benutzt weiterhin den gemerkten Code - der einmalige Ablauf
-// aendert sich also nicht. Wer sich automatisch anmeldet, sieht diese Maske
-// ohnehin nie.
+// Sichtbar, sobald die Schule einen Code verlangt. Gebraucht wird er bei jeder
+// Neuanmeldung - nach dem Abmelden oder wenn die Sitzung abgelaufen ist. Wer
+// nach einem Verbindungsabbruch still wieder hineinkommt, sieht diese Maske
+// gar nicht.
 function zeigePinFeld() {
   pinGruppe.classList.toggle('hidden', !pinNoetig);
-  if (!pinNoetig) return;
-
-  const gemerkt = Boolean(gemerkterPin());
-  inputPin.placeholder = gemerkt ? 'gespeichert – nur bei Änderung ausfüllen' : 'einmalig eingeben';
-  pinNotiz.classList.toggle('hidden', !gemerkt);
 }
 
 function zeigeSchulfehler(text) {
@@ -282,29 +281,60 @@ socket.on('connect', async () => {
   console.log('Connected to server');
   await schuleGeprueft;
 
-  // Greift auch nach einem Reconnect: die Anmeldung stellt die Zuordnung
-  // Socket -> Lehrkraft wieder her, damit Meldungen ankommen.
-  const savedUser = localStorage.getItem(sitzungsSchluessel());
-  if (!savedUser) return;
+  // Die Maske vorbelegen: Klappt die Wiederanmeldung nicht, steht sie schon
+  // ausgefuellt da, und es fehlt hoechstens der Code.
+  const gespeichert = gespeicherteAngaben();
+  if (gespeichert) {
+    inputName.value = gespeichert.name || '';
+    inputRoom.value = gespeichert.room || '';
+  }
 
-  const user = JSON.parse(savedUser);
-  inputName.value = user.name;
-  inputRoom.value = user.room;
+  // Greift auch nach einem Reconnect: die Wiederanmeldung stellt die Zuordnung
+  // Socket -> Lehrkraft wieder her, damit Meldungen ankommen. Den Raum schickt
+  // sie mit, falls er waehrend des Abbruchs geaendert wurde.
+  const token = localStorage.getItem(tokenSchluessel());
+  if (token) {
+    socket.emit('login', { token, schulId: SCHULCODE, room: gespeichert ? gespeichert.room : '' });
+    return;
+  }
 
-  // Fehlt der Code, bleibt es bei der ausgefuellten Anmeldemaske: die Person
-  // ergaenzt ihn und drueckt selbst auf Starten.
-  if (pinNoetig && !gemerkterPin()) return;
+  // Ohne Sitzung still neu anmelden, wenn alles da ist. Fehlt der Code, bleibt
+  // es bei der ausgefuellten Maske: die Person ergaenzt ihn und drueckt selbst
+  // auf Starten.
+  if (!gespeichert) return;
+  if (pinNoetig && !anmeldePin) return;
   anmelden();
 });
 
 socket.on('login_failed', (antwort) => {
   const grund = antwort && antwort.grund;
+  // Ein abgewiesenes Token taugt nicht mehr, gleich aus welchem Grund.
+  localStorage.removeItem(tokenSchluessel());
+
+  if (grund === 'sitzung_ungueltig') {
+    // Abgelaufen, anderswo abgemeldet oder der Server wurde neu gestartet. Der
+    // alte Stand gehoert zur alten Sitzung und wird verworfen.
+    zuruecksetzen();
+    // Ohne Code geht es still mit einer neuen Anmeldung weiter, wie bisher.
+    if (inputName.value.trim() && inputRoom.value.trim() && (!pinNoetig || anmeldePin)) {
+      anmelden();
+      return;
+    }
+    // Mit Code muss die Lehrkraft ihn erneut eingeben - er liegt ja nicht
+    // mehr im Browser. Name und Raum bleiben stehen.
+    zeigeSchulfehler(ABWEISUNG.sitzung_ungueltig);
+    btnLogin.disabled = false;
+    switchView(loginView);
+    inputPin.focus();
+    return;
+  }
+
   zeigeSchulfehler(ABWEISUNG[grund] || 'Anmeldung nicht möglich.');
 
   if (grund === 'pin_falsch') {
-    // Der gemerkte Code taugt nicht mehr - etwa weil die Schule ihn geaendert
-    // hat. Feld wieder zeigen und erneut fragen.
-    localStorage.removeItem(pinSchluessel());
+    // Der Code taugt nicht - vertippt, oder die Schule hat ihn geaendert.
+    // Feld wieder zeigen und erneut fragen.
+    anmeldePin = '';
     pinNoetig = true;
     zeigePinFeld();
     btnLogin.disabled = false;
@@ -313,17 +343,19 @@ socket.on('login_failed', (antwort) => {
   }
 
   localStorage.removeItem(sitzungsSchluessel());
-  switchView(loginView);
+  zurAnmeldung();
 });
 
-socket.on('login_success', (user) => {
+socket.on('login_success', (antwort) => {
   btnLogin.disabled = false;
   schulFehler.classList.add('hidden');
 
-  if (inputPin.value.trim()) {
-    localStorage.setItem(pinSchluessel(), inputPin.value.trim());
-    inputPin.value = '';
-  }
+  // Das Token kommt nur bei der Erstanmeldung. Ab jetzt weist es dieses
+  // Geraet aus; der Code hat seinen Dienst getan und wird vergessen.
+  const { token, ...user } = antwort;
+  if (token) localStorage.setItem(tokenSchluessel(), token);
+  anmeldePin = '';
+  inputPin.value = '';
   pinGruppe.classList.add('hidden');
   currentUser = user;
   localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: user.name, room: user.room }));
@@ -335,6 +367,13 @@ socket.on('login_success', (user) => {
   // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
   // gerade arbeitet.
   if (loginView.classList.contains('active-view')) switchView(dashboardView);
+});
+
+// Ein anderer Tab dieser Sitzung hat sich abgemeldet - das Token ist damit
+// widerrufen. Dieser Tab darf nicht angemeldet weiterlaufen. Den Browser hat
+// der andere Tab schon aufgeraeumt.
+socket.on('logged_out', () => {
+  zurAnmeldung();
 });
 
 // Der Server ist die Wahrheit ueber Aufnahmebereitschaft und Plaetze, nicht
@@ -592,17 +631,17 @@ function renderTeachersList() {
 
 // --- UI Event Listeners ---
 
+// Neuanmeldung mit Name, Raum und Code. Eine Kennung schickt der Client nicht
+// mehr mit - die vergibt der Server.
 function anmelden() {
   const name = inputName.value.trim();
   const room = inputRoom.value.trim();
   if (name && room) {
-    socket.emit('login', {
-      teacherId: meineKennung(),
-      schulId: SCHULCODE,
-      pin: inputPin.value.trim() || gemerkterPin(),
-      name,
-      room
-    });
+    // Der Code wird gebraucht, bis die Anmeldung durch ist - auch ueber einen
+    // Verbindungsabbruch hinweg. Danach vergisst ihn die Seite.
+    const pin = inputPin.value.trim();
+    if (pin) anmeldePin = pin;
+    socket.emit('login', { schulId: SCHULCODE, pin: anmeldePin, name, room });
   } else {
     showToast('Bitte Name und Raum eingeben.');
   }
@@ -610,12 +649,8 @@ function anmelden() {
 
 btnLogin.addEventListener('click', anmelden);
 
-// Logout
-btnLogout.addEventListener('click', () => {
-  socket.emit('logout');
-  localStorage.removeItem(sitzungsSchluessel());
-  // Die Geraetekennung bleibt bewusst stehen: sie identifiziert das Geraet,
-  // nicht die Person, und wird bei der naechsten Anmeldung wiederverwendet.
+// Verwirft alles, was zur bisherigen Sitzung gehoert.
+function zuruecksetzen() {
   currentUser = null;
   meineVorfaelle = [];
   meinePlaetze = 0;
@@ -626,7 +661,24 @@ btnLogout.addEventListener('click', () => {
   zeigePinFeld();
   zeichneStatus();
   renderVorfaelle();
+}
+
+function zurAnmeldung() {
+  zuruecksetzen();
   switchView(loginView);
+}
+
+// Logout
+btnLogout.addEventListener('click', () => {
+  // Das Token geht mit: Ist die Verbindung gerade weg, kommt die Abmeldung
+  // erst nach dem Reconnect an, und erst das Token sagt dem Server, wessen
+  // Sitzung er widerrufen soll.
+  socket.emit('logout', { token: localStorage.getItem(tokenSchluessel()) });
+  // Die naechste Anmeldung auf diesem Geraet ist eine neue. Auf einem Raum-PC
+  // soll niemand die Sitzung der Kollegin vor ihm weiterfuehren.
+  localStorage.removeItem(tokenSchluessel());
+  localStorage.removeItem(sitzungsSchluessel());
+  zurAnmeldung();
 });
 
 // Status Toggle
