@@ -31,9 +31,10 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
   - Ist die Gegenseite offline, lässt sich ein hängengebliebener Vorfall einseitig beenden. Er endet als `Einseitig beendet`, nicht als `Zurück` — niemand hat die Rückkehr bestätigt.
   - Solange die Gegenseite erreichbar ist, wird das abgelehnt: Sonst beendete man ihr einen laufenden Vorgang unter den Händen.
   - Ein belegter Platz wird dabei frei.
-- **Datensparsamkeit**:
-  - Der Schülername wird aus beendeten Vorfällen gelöscht (Vorgabe: nach 2 Stunden); Zeitpunkt und beteiligte Lehrkräfte bleiben als Protokoll stehen.
-  - Beendete Vorfälle fallen später ganz aus dem Speicher (Vorgabe: nach 12 Stunden), nie geschlossene nach 24 Stunden.
+- **Dauerhaftes Protokoll & Datensparsamkeit** (siehe [Aufbewahrung](#aufbewahrung)):
+  - Im Schulbetrieb werden Vorfälle in MariaDB protokolliert, mit einem Zeitstempel je Zustandswechsel, und **zu Beginn des neuen Schuljahres gelöscht**.
+  - Ein Neustart des Servers verliert keine laufende Auszeit: Vorfälle, Belegung und Sitzungen stehen danach wieder da.
+  - Demo-Mandanten behalten die kurzen Fristen: Schülername nach 2 Stunden, Vorfall nach 12 Stunden weg.
 - **Protokoll & Verlaufsübersicht ("Meine Auszeiten")**:
   - Live-Liste aller gesendeten und empfangenen Auszeit-Vorfälle mit Status und Zeitstempel; laufende Vorfälle stehen oben.
   - Zustände: `Auf dem Weg` → `In Betreuung` → `Auf dem Rückweg` → `Zurück`.
@@ -46,7 +47,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 - **Node.js** & **Express** (`v5`)
 - **Socket.io** (`v4`) für bi-direktionale Echtzeit-Websocket-Kommunikation
 - **CORS** Middleware
-- In-Memory Datenhaltung (keine externe Datenbank erforderlich)
+- **MariaDB** (`mysql2`) für das Protokoll; ohne `DB_HOST` läuft alles nur im Arbeitsspeicher
 
 ### Frontend
 - **Vite** & JavaScript (ES Modules)
@@ -61,7 +62,10 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 auszeit-app/
 ├── backend/
 │   ├── package.json
-│   ├── server.js         # Express + Socket.IO Server & In-Memory Event-Logik
+│   ├── server.js         # Express + Socket.IO Server & Event-Logik
+│   ├── ablage/           # Dauerhafte Ablage: MariaDB oder nur Arbeitsspeicher
+│   ├── migrationen/      # Datenbankschema, beim Start eingespielt
+│   ├── schuljahr.js      # Schuljahr eines Zeitpunkts, Stichtag
 │   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
 │   ├── portal.js         # Anmeldung über das SchulOS-Portal (OpenID Connect)
 │   ├── kekse.js          # Cookies lesen – für Routen und Socket-Handshake
@@ -137,7 +141,20 @@ npm test
 
 Die Tests laufen mit `node:test` und starten den Server auf einem freien Port;
 die Mandanten kommen dabei aus einer temporären Datei, die echte Ablage bleibt
-unberührt.
+unberührt. Sie brauchen keine Datenbank: Ohne `DB_HOST` hält die Ablage alles
+im Arbeitsspeicher, und einen Neustart spielen die Tests nach, indem sie den
+Server im selben Prozess neu laden.
+
+Die Ablage selbst lässt sich zusätzlich gegen eine echte MariaDB prüfen –
+eine Wegwerf-Datenbank, denn der Test leert die Tabellen:
+
+```bash
+docker run -d --rm --name auszeit-testdb -p 127.0.0.1:33306:3306 -e MARIADB_ROOT_PASSWORD=test -e MARIADB_DATABASE=auszeit_test mariadb:10.11
+```
+
+```bash
+AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=test npm test
+```
 
 ---
 
@@ -283,17 +300,90 @@ Anmeldungen mehr an, wer verbunden ist, arbeitet aber weiter - laufende
 Auszeiten brechen nicht mitten in der Stunde ab. Endgueltig loeschen laesst
 sich nur, was niemand mehr benutzt.
 
-### Aufbewahrung konfigurieren
+### Dauerhafte Speicherung
 
-Aufbewahrungsfristen sind eine Schulentscheidung, keine Programmierentscheidung.
-Alle Werte in Millisekunden, als Umgebungsvariablen des Containers:
+Vorfälle, Sitzungen und Lehrkräfte stehen in MariaDB. Der Arbeitsspeicher bleibt
+der Arbeitszustand: Wer online ist, aufnehmen kann und wie viele Plätze
+anbietet, wechselt im Minutentakt und beginnt nach einem Neustart von vorn. Die
+Datenbank ist die dauerhafte Abschrift – das Protokoll für die Schule und der
+Stand, aus dem ein Neustart laufende Auszeiten samt Belegung wiederherstellt.
+
+Geschrieben wird hinter dem Ereignis: Die Socket-Ereignisse bleiben schnell,
+eine langsame Datenbank hält keine Ankunftsbestätigung auf. Alle Schreibvorgänge
+laufen nacheinander durch eine Warteschlange, sodass „angekommen“ nie „angelegt“
+überholt. Beim Herunterfahren (`SIGTERM`, etwa durch `docker compose restart`)
+wird die Warteschlange erst zu Ende geschrieben.
+
+| Variable | Bedeutung |
+| :--- | :--- |
+| `DB_HOST` | Datenbankserver. **Ohne Angabe läuft alles nur im Arbeitsspeicher** – ein Neustart verliert dann alle Vorfälle. |
+| `DB_PORT` | Vorgabe `3306` |
+| `DB_NAME` / `DB_USER` | Vorgabe jeweils `auszeit` |
+| `DB_PASS` | Passwort |
+| `DB_PASS_FILE` | Alternativ: Datei mit dem Passwort |
+
+Die Namen sind dieselben wie bei den PHP-Modulen des Verbunds. Ist `DB_HOST`
+gesetzt, aber kein Passwort, startet Auszeit nicht – lieber nicht starten als
+ohne Protokoll laufen. Beim Start wartet Auszeit bis zu einer Minute auf die
+Datenbank und spielt fehlende Migrationen aus `backend/migrationen/` ein, in der
+Reihenfolge der Dateinamen.
+
+Tabellen:
+
+| Tabelle | Inhalt |
+| :--- | :--- |
+| `lehrkraefte` | Kennung, Schule, `sub` bei Anmeldung über das Portal, Name, Kürzel, Raum, Rolle „Verwaltung“ |
+| `sitzungen` | Hash des Tokens, Kennung, Ablauf, bei Portal-Anmeldung `sid` und ID-Token |
+| `vorfaelle` | Schuljahr, Schüler, abgebende und aufnehmende Lehrkraft samt Raum, Zustand, je Zustandswechsel ein Zeitpunkt (`angefordert_am`, `angekommen_am`, `rueckholwunsch_am`, `zurueckgeschickt_am`, `zurueck_am`, `beendet_am`), Art des Abschlusses (`zurueck`, `einseitig`, `abgebrochen`) |
+
+**Alle Zeitpunkte stehen in UTC.** Sonst hinge ihre Bedeutung an der Zeitzone
+des Containers, und um die Zeitumstellung herum wäre eine Stunde doppeldeutig.
+Für eine Auswertung in Ortszeit: `CONVERT_TZ(angefordert_am, '+00:00', 'Europe/Berlin')`
+(braucht die Zeitzonentabellen von MariaDB) oder die Umrechnung im
+Auswertungswerkzeug.
+
+**Einzelbetrieb.** Die `docker-compose.yml` bringt eine eigene MariaDB mit.
+Ihr Passwort steht nirgends im Klartext: Beim allerersten Start erzeugt der
+Dienst `geheimnis` es in ein eigenes Volume, MariaDB und Auszeit lesen es von
+dort. `docker compose up` braucht dafür keine Vorbereitung. Zu sichern ist das
+Volume `db-daten`. Für einen Blick in die Datenbank:
+
+```bash
+docker compose exec db sh -c 'mariadb -uauszeit -p"$(cat /geheimnis/db)" auszeit'
+```
+
+**Im Verbund** liegen die Daten in `db_auszeit` der gemeinsamen MariaDB;
+`DB_AUSZEIT_PASSWORT` in der `.env` des Portals ist dafür Pflicht.
+
+### Aufbewahrung
+
+Zwei Regeln, je nachdem, ob ein Mandant als Demo markiert ist (`demo: true`):
+
+**Schulbetrieb.** Das Protokoll ist eine Vorgabe der Schule. Vorfälle bleiben
+mit Namen bis zum Beginn des neuen Schuljahres; dann löscht Auszeit alle
+Vorfälle früherer Schuljahre und schreibt die Anzahl ins Log. Das Schuljahr
+steht als Spalte am Vorfall. Ein Vorfall, den nach 24 Stunden niemand beendet
+hat, wird als `abgebrochen` geschlossen statt gelöscht – auch eine Meldung, auf
+die niemand reagiert hat, gehört ins Protokoll. Aus „Meine Auszeiten“
+verschwinden beendete Vorfälle nach zwölf Stunden; das ist nur die Anzeige.
+
+**Demo-Mandanten** behalten die kurzen Fristen: Eine öffentliche Demo soll keine
+Daten ansammeln. Der Schülername fällt nach zwei Stunden weg, der beendete
+Vorfall nach zwölf, ein nie geschlossener nach 24 – auch aus der Datenbank.
 
 | Variable | Vorgabe | Bedeutung |
 | :--- | :--- | :--- |
-| `AUSZEIT_NAME_TTL_MS` | 2 h | Wann der Schülername aus einem beendeten Vorfall gelöscht wird |
-| `AUSZEIT_VORFALL_TTL_MS` | 12 h | Wann ein beendeter Vorfall ganz entfernt wird |
-| `AUSZEIT_MAX_ALTER_MS` | 24 h | Höchstalter für nie geschlossene Vorfälle |
-| `AUSZEIT_AUFRAEUM_MS` | 30 min | Abstand zwischen zwei Aufräumläufen |
+| `AUSZEIT_SCHULJAHR_STICHTAG` | `08-01` | Beginn des neuen Schuljahres (`MM-TT`), ab Mitternacht Ortszeit. Ein unbrauchbarer Wert fällt auf den 1. August zurück. |
+| `AUSZEIT_NAME_TTL_MS` | 2 h | Nur Demo: wann der Schülername aus einem beendeten Vorfall gelöscht wird |
+| `AUSZEIT_VORFALL_TTL_MS` | 12 h | Nur Demo: wann ein beendeter Vorfall ganz gelöscht wird |
+| `AUSZEIT_MAX_ALTER_MS` | 24 h | Nur Demo: wann ein nie geschlossener Vorfall gelöscht wird |
+| `AUSZEIT_AUFRAEUM_MS` | 30 min | Abstand zwischen zwei Aufräumläufen; mit jedem Lauf wird auch der Schuljahreswechsel geprüft |
+
+Der Stichtag ist einstellbar, weil er noch mit dem Datenschutzbeauftragten
+festgelegt wird. Lehrkräfte aus einer Anmeldung mit Code verschwinden aus der
+Datenbank, sobald weder eine Sitzung noch ein Vorfall auf sie zeigt; Lehrkräfte
+aus dem Portal bleiben – an ihnen hängt die Kennung, unter der ihre Vorfälle
+stehen.
 
 ### Identität und Sitzung
 
@@ -332,9 +422,9 @@ Beitrittscode kannte, konnte so die Sitzung einer anderen Lehrkraft übernehmen.
 | :--- | :--- | :--- |
 | `AUSZEIT_SITZUNG_TTL_MS` | 14 h | Gültigkeit eines Sitzungstokens in Millisekunden. Mindestens ein Schultag, aber nicht bis zum nächsten Morgen. |
 
-Die Tokens liegen derzeit im Arbeitsspeicher, wie alles andere auch: Nach einem
-Neustart des Servers melden sich alle Lehrkräfte neu an. Mit der dauerhaften
-Speicherung wandern sie in die Datenbank.
+Die Sitzungen stehen in der Datenbank – nur der Hash des Tokens – und
+überstehen damit einen Neustart: Die Lehrkräfte kommen ohne erneuten Code
+zurück.
 
 ### Betrieb im SchulOS-Verbund
 

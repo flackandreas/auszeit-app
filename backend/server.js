@@ -9,6 +9,9 @@ const { erstelleAdmin, TOKEN_MINDESTLAENGE } = require('./admin');
 const { erstelleSitzungen } = require('./sitzungen');
 const { liesKeks } = require('./kekse');
 const { konfigurationAusUmgebung, erstellePortal } = require('./portal');
+const { standardAblage } = require('./ablage');
+const { lehrkraftAusZeile, vorfallAusZeile } = require('./ablage/zeilen');
+const { stichtagAus, schuljahrVon, schuljahrText } = require('./schuljahr');
 
 const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
 
@@ -225,7 +228,11 @@ const incidents = [];
 // eingeben muss - aber nicht laenger: auf einem Raum-PC, an dem sich niemand
 // abmeldet, ist die Sitzung am naechsten Morgen sonst noch offen.
 const SITZUNG_GUELTIG_MS = dauerAusUmgebung('AUSZEIT_SITZUNG_TTL_MS', 14 * 60 * 60 * 1000);
-const sitzungen = erstelleSitzungen({ gueltigMs: SITZUNG_GUELTIG_MS });
+
+// Die dauerhafte Abschrift: MariaDB, wenn DB_HOST gesetzt ist, sonst nur der
+// Arbeitsspeicher wie bisher. Siehe ablage/index.js.
+const ablage = standardAblage();
+const sitzungen = erstelleSitzungen({ gueltigMs: SITZUNG_GUELTIG_MS, ablage });
 
 // --- Anmeldung ueber das SchulOS-Portal ---
 //
@@ -274,18 +281,29 @@ const ABGEBROCHEN = 'abgebrochen';
 const ABGESCHLOSSEN = new Set([ZURUECK, ABGEBROCHEN]);
 
 
-// Aufraeumfristen. Der Schuelername ist die eigentliche personenbezogene
-// Angabe - fuer das Protokoll genuegen Zeitpunkt und beteiligte Lehrkraefte.
-// Er faellt deshalb deutlich frueher weg als der Vorfall selbst.
-// Ueber Umgebungsvariablen einstellbar: Aufbewahrungsfristen sind eine
-// Schulentscheidung, keine Programmierentscheidung.
+// Aufbewahrung. Zwei Regeln, je nach Mandant:
+//
+// Im Schulbetrieb ist das Protokoll eine Vorgabe der Schule. Vorfaelle bleiben
+// bis zum Beginn des naechsten Schuljahres, mit Namen - sonst taugt das
+// Protokoll nicht zur Auswertung. Der Stichtag ist einstellbar, weil er noch
+// mit dem Datenschutzbeauftragten abgestimmt wird.
+const STICHTAG = stichtagAus(process.env.AUSZEIT_SCHULJAHR_STICHTAG);
+// Nie geschlossene Vorfaelle werden nach einem Tag als "abgebrochen"
+// geschlossen statt geloescht: Auch eine Meldung, auf die niemand reagiert hat,
+// gehoert ins Protokoll.
+const AUTOSCHLUSS_NACH_MS = 24 * 60 * 60 * 1000;
+// Wie lange ein beendeter Vorfall in "Meine Auszeiten" steht. Das ist nur die
+// Anzeige - in der Ablage bleibt er.
+const ANZEIGE_FENSTER_MS = 12 * 60 * 60 * 1000;
+//
+// Demo-Mandanten behalten die kurzen Fristen von frueher: Eine oeffentliche
+// Demo soll keine Daten ansammeln. Der Schuelername ist dort die eigentliche
+// personenbezogene Angabe und faellt deutlich frueher weg als der Vorfall.
 const NAME_LOESCHEN_NACH_MS = dauerAusUmgebung("AUSZEIT_NAME_TTL_MS", 2 * 60 * 60 * 1000);
 const VORFALL_LOESCHEN_NACH_MS = dauerAusUmgebung("AUSZEIT_VORFALL_TTL_MS", 12 * 60 * 60 * 1000);
-// Fuer nie geschlossene Vorfaelle - sonst bleiben sie fuer immer liegen.
 const VORFALL_HOECHSTALTER_MS = dauerAusUmgebung("AUSZEIT_MAX_ALTER_MS", 24 * 60 * 60 * 1000);
 
 const MAX_PLAETZE = 3;
-let vorfallZaehler = 0;
 
 // --- Kleine Helfer ---
 
@@ -313,6 +331,21 @@ function neueKennung() {
     id = crypto.randomBytes(12).toString('base64url');
   } while (teachers.has(id));
   return id;
+}
+
+// Zufaellig statt hochgezaehlt: Ein Zaehler finge nach jedem Neustart wieder
+// bei 1 an, und in der Ablage stuende zweimal derselbe Vorfall.
+function neueVorfallsKennung() {
+  let id;
+  do {
+    id = crypto.randomBytes(9).toString('base64url');
+  } while (incidents.some(v => v.id === id));
+  return id;
+}
+
+function istDemo(schulId) {
+  const schule = SCHULEN.get(schulId);
+  return Boolean(schule && schule.demo);
 }
 
 function text(wert, maxLaenge) {
@@ -468,6 +501,7 @@ function lehrkraftFuerPortal(identitaet, schulId) {
       teacher.name = identitaet.name || teacher.name;
       teacher.kuerzel = identitaet.kuerzel;
       teacher.verwaltung = portal.istVerwaltung(identitaet);
+      ablage.lehrkraftSpeichern(teacher);
       return teacher;
     }
   }
@@ -489,6 +523,7 @@ function lehrkraftFuerPortal(identitaet, schulId) {
     verwaltung: portal.istVerwaltung(identitaet)
   };
   teachers.set(teacher.id, teacher);
+  ablage.lehrkraftSpeichern(teacher);
   return teacher;
 }
 
@@ -676,7 +711,10 @@ io.on('connection', (socket) => {
     }
 
     const room = text(data.room, 30);
-    if (room) teacher.room = room;
+    if (room && room !== teacher.room) {
+      teacher.room = room;
+      ablage.lehrkraftSpeichern(teacher);
+    }
     if (!teacher.room) {
       socket.emit('login_failed', { grund: 'raum_fehlt' });
       return;
@@ -709,7 +747,10 @@ io.on('connection', (socket) => {
     // Verbindung weg war. Ein stillgelegter Mandant laesst die Wiederanmeldung
     // bewusst zu, sonst verschwaenden laufende Auszeiten mitten in der Stunde.
     const room = text(data.room, 30);
-    if (room) teacher.room = room;
+    if (room && room !== teacher.room) {
+      teacher.room = room;
+      ablage.lehrkraftSpeichern(teacher);
+    }
     teacher.online = true;
     teacher.offlineSeit = null;
     verbinde(teacher, schule, { schluessel: sitzung.schluessel });
@@ -756,6 +797,7 @@ io.on('connection', (socket) => {
       offlineSeit: null
     };
     teachers.set(teacher.id, teacher);
+    ablage.lehrkraftSpeichern(teacher);
     const token = sitzungen.ausstellen(teacher.id);
     verbinde(teacher, schule, { token, schluessel: sitzungen.sitzung(token).schluessel });
   }
@@ -798,8 +840,13 @@ io.on('connection', (socket) => {
 
     teacher.isAvailable = Boolean(data && data.isAvailable);
     teacher.plaetze = begrenzePlaetze(data && data.capacity);
+    // Aufnahmebereitschaft und Plaetze sind Laufzeitzustand; dauerhaft
+    // festgehalten wird nur der Raum.
     const room = text(data && data.room, 30);
-    if (room) teacher.room = room;
+    if (room && room !== teacher.room) {
+      teacher.room = room;
+      ablage.lehrkraftSpeichern(teacher);
+    }
 
     // Der eigene Zustand kann sich geaendert haben (etwa der Raum), also auch
     // an die eigenen Geraete zurueckspiegeln.
@@ -829,9 +876,11 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const jetzt = new Date();
     const incident = {
-      id: `v${++vorfallZaehler}`,
+      id: neueVorfallsKennung(),
       schulId: sender.schulId,
+      schuljahr: schuljahrVon(jetzt, STICHTAG),
       senderId: sender.id,
       senderName: sender.name,
       senderRaum: sender.room,
@@ -840,9 +889,10 @@ io.on('connection', (socket) => {
       receiverRaum: receiver.room,
       studentName: text(data && data.studentName, 60),
       status: UNTERWEGS,
-      timestamp: new Date()
+      timestamp: jetzt
     };
     incidents.push(incident);
+    ablage.vorfallSpeichern(incident);
 
     // Der Platz ist ab jetzt belegt, nicht erst bei der Ankunft: sonst sehen
     // zwei Kolleginnen im selben Moment denselben letzten freien Platz und
@@ -869,6 +919,7 @@ io.on('connection', (socket) => {
 
     incident.status = BETREUT;
     incident.angekommenAm = new Date();
+    ablage.vorfallSpeichern(incident);
 
     io.to(incident.senderId).emit('student_arrived', fuerClient(incident));
     syncUserIncidents(incident.senderId);
@@ -885,6 +936,7 @@ io.on('connection', (socket) => {
 
     incident.status = AUF_DEM_RUECKWEG;
     incident.rueckwegSeit = new Date();
+    ablage.vorfallSpeichern(incident);
 
     // Der Platz wird sofort frei - der Schueler hat den Raum verlassen.
     gibPlatzFrei(incident);
@@ -907,7 +959,10 @@ io.on('connection', (socket) => {
     if (incident.status !== AUF_DEM_RUECKWEG) return;
 
     incident.status = ZURUECK;
-    incident.beendetAm = new Date();
+    incident.zurueckAm = new Date();
+    incident.beendetAm = incident.zurueckAm;
+    incident.abschluss = 'zurueck';
+    ablage.vorfallSpeichern(incident);
 
     io.to(incident.receiverId).emit('return_confirmed', fuerClient(incident));
     syncUserIncidents(incident.senderId);
@@ -926,6 +981,7 @@ io.on('connection', (socket) => {
 
     incident.rueckholwunsch = true;
     incident.rueckholwunschSeit = new Date();
+    ablage.vorfallSpeichern(incident);
 
     io.to(incident.receiverId).emit('return_requested', fuerClient(incident));
     syncUserIncidents(incident.senderId);
@@ -951,7 +1007,11 @@ io.on('connection', (socket) => {
     incident.status = ABGEBROCHEN;
     incident.beendetAm = new Date();
     incident.beendetVon = teacher.id;
+    // Im Protokoll unterschieden vom Abbruch nach einem Tag: Hier hat eine
+    // Seite den Vorfall bewusst geschlossen.
+    incident.abschluss = 'einseitig';
     gibPlatzFrei(incident);
+    ablage.vorfallSpeichern(incident);
 
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
@@ -1021,11 +1081,9 @@ function loeseVerbindung(socket) {
 const AUFRAEUM_INTERVALL_MS = dauerAusUmgebung("AUSZEIT_AUFRAEUM_MS", 30 * 60 * 1000);
 const OFFLINE_GNADENFRIST_MS = 12 * 60 * 60 * 1000;
 
-// Loescht Schuelernamen aus laengst beendeten Vorfaellen und entfernt die
-// Vorfaelle danach ganz. Gibt die betroffenen Lehrkraefte zurueck, damit ihre
-// Listen nicht veraltet stehenbleiben.
-function raeumeVorfaelleAuf() {
-  const jetzt = Date.now();
+// Wendet die Aufbewahrungsregeln auf die Vorfaelle an. Gibt die betroffenen
+// Lehrkraefte zurueck, damit ihre Listen nicht veraltet stehenbleiben.
+function raeumeVorfaelleAuf(jetzt) {
   const betroffen = new Set();
   const schulen = new Set();
 
@@ -1035,35 +1093,59 @@ function raeumeVorfaelleAuf() {
     const beendet = v.beendetAm ? new Date(v.beendetAm).getTime() : null;
     const fertig = ABGESCHLOSSEN.has(v.status);
 
-    const zuAlt = jetzt - begonnen > VORFALL_HOECHSTALTER_MS;
-    const langeFertig = fertig && beendet !== null
-      && jetzt - beendet > VORFALL_LOESCHEN_NACH_MS;
-
-    if (zuAlt || langeFertig) {
-      if (gibPlatzFrei(v)) schulen.add(v.schulId);
-      incidents.splice(i, 1);
-      betroffen.add(v.senderId).add(v.receiverId);
+    if (istDemo(v.schulId)) {
+      // Demo: nichts soll sich ansammeln. Nie geschlossene und laengst
+      // beendete Vorfaelle verschwinden ganz, auch aus der Ablage.
+      const zuAlt = jetzt - begonnen > VORFALL_HOECHSTALTER_MS;
+      const langeFertig = fertig && beendet !== null && jetzt - beendet > VORFALL_LOESCHEN_NACH_MS;
+      if (zuAlt || langeFertig) {
+        if (gibPlatzFrei(v)) schulen.add(v.schulId);
+        incidents.splice(i, 1);
+        ablage.vorfallLoeschen(v.id);
+        betroffen.add(v.senderId).add(v.receiverId);
+        continue;
+      }
+      if (fertig && beendet !== null && v.studentName && jetzt - beendet > NAME_LOESCHEN_NACH_MS) {
+        v.studentName = '';
+        ablage.vorfallSpeichern(v);
+        betroffen.add(v.senderId).add(v.receiverId);
+      }
       continue;
     }
 
-    if (fertig && beendet !== null && v.studentName
-        && jetzt - beendet > NAME_LOESCHEN_NACH_MS) {
-      v.studentName = '';
+    // Schulbetrieb: Ein Vorfall, den nach einem Tag niemand beendet hat, wird
+    // als "abgebrochen" geschlossen - der Platz wird frei, das Protokoll
+    // behaelt ihn.
+    if (!fertig && jetzt - begonnen > AUTOSCHLUSS_NACH_MS) {
+      v.status = ABGEBROCHEN;
+      v.abschluss = 'abgebrochen';
+      v.beendetAm = new Date(jetzt);
+      if (gibPlatzFrei(v)) schulen.add(v.schulId);
+      ablage.vorfallSpeichern(v);
+      betroffen.add(v.senderId).add(v.receiverId);
+      continue;
+    }
+    // Aus der Anzeige faellt er nach einem halben Tag, aus der Ablage erst zum
+    // Schuljahreswechsel.
+    if (fertig && beendet !== null && jetzt - beendet > ANZEIGE_FENSTER_MS) {
+      incidents.splice(i, 1);
       betroffen.add(v.senderId).add(v.receiverId);
     }
   }
   return { betroffen, schulen };
 }
 
-const aufraeumer = setInterval(() => {
-  const jetzt = Date.now();
-
+function raeumeAuf(jetzt = Date.now()) {
   // Erst die Vorfaelle: der Lehrkraft-Durchlauf darunter prueft, ob noch ein
   // offener Vorfall an ihr haengt.
-  const { betroffen, schulen } = raeumeVorfaelleAuf();
+  const { betroffen, schulen } = raeumeVorfaelleAuf(jetzt);
 
   for (const [id, teacher] of teachers) {
     if (teacher.online || teacher.betreut.length > 0) continue;
+    // Lehrkraefte aus dem Portal bleiben: Nur so behalten sie nach Tagen
+    // dieselbe Kennung, an der ihre Vorfaelle haengen. Es sind so viele, wie
+    // die Schule Lehrkraefte hat.
+    if (teacher.sub) continue;
     if (jetzt - (teacher.offlineSeit || jetzt) < OFFLINE_GNADENFRIST_MS) continue;
 
     const hatOffenenVorfall = incidents.some(
@@ -1074,15 +1156,93 @@ const aufraeumer = setInterval(() => {
       teachers.delete(id);
       // Ein Token, das auf niemanden mehr zeigt, darf nicht liegenbleiben.
       sitzungen.widerrufeFuer(id);
+      ablage.lehrkraftLoeschen(id);
     }
   }
   sitzungen.aufraeumen();
+  ablage.verwaisteLehrkraefteLoeschen(jetzt);
 
   for (const id of betroffen) syncUserIncidents(id);
   // Nur die Mandanten auffrischen, in denen sich wirklich etwas geaendert hat.
   for (const schulId of schulen) broadcastAvailableTeachers(schulId);
+}
+
+// Schuljahreswechsel: Ist der Stichtag ueberschritten, faellt das Protokoll
+// frueherer Schuljahre weg - aus der Anzeige und aus der Ablage. Laeuft mit
+// jedem Aufraeumen; nach dem Stichtag gibt es beim ersten Mal etwas zu tun,
+// danach nichts mehr.
+async function pruefeJahreswechsel(jetzt = new Date()) {
+  const aktuell = schuljahrVon(jetzt, STICHTAG);
+  const betroffen = new Set();
+  const schulen = new Set();
+  for (let i = incidents.length - 1; i >= 0; i--) {
+    const v = incidents[i];
+    if (v.schuljahr >= aktuell) continue;
+    if (gibPlatzFrei(v)) schulen.add(v.schulId);
+    incidents.splice(i, 1);
+    betroffen.add(v.senderId).add(v.receiverId);
+  }
+  for (const id of betroffen) syncUserIncidents(id);
+  for (const schulId of schulen) broadcastAvailableTeachers(schulId);
+
+  const geloescht = await ablage.jahreswechsel(aktuell);
+  if (geloescht > 0) {
+    console.log(`Schuljahreswechsel: ${geloescht} Vorfaelle aus Schuljahren vor ${schuljahrText(aktuell)} geloescht.`);
+  }
+  return geloescht;
+}
+
+const aufraeumer = setInterval(() => {
+  raeumeAuf();
+  pruefeJahreswechsel().catch(err => console.error('Schuljahreswechsel fehlgeschlagen:', err.message));
 }, AUFRAEUM_INTERVALL_MS);
 if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
+
+// --- Neustart ---
+//
+// Nach einem Neustart steht der Stand aus der Ablage wieder da: die bekannten
+// Lehrkraefte, ihre gueltigen Sitzungen und die Vorfaelle, die noch laufen
+// oder heute beendet wurden. Die Belegung ist kein eigener Zustand - sie folgt
+// aus den Vorfaellen, die unterwegs oder in Betreuung sind.
+function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle }) {
+  for (const zeile of lehrkraefte) teachers.set(zeile.kennung, lehrkraftAusZeile(zeile));
+  sitzungen.laden(sitzungsZeilen);
+  let belegt = 0;
+  for (const zeile of vorfaelle) {
+    const vorfall = vorfallAusZeile(zeile);
+    incidents.push(vorfall);
+    if (vorfall.status === UNTERWEGS || vorfall.status === BETREUT) {
+      const receiver = teachers.get(vorfall.receiverId);
+      if (receiver) {
+        receiver.betreut.push(vorfall.id);
+        belegt += 1;
+      }
+    }
+  }
+  return { lehrkraefte: lehrkraefte.length, sitzungen: sitzungsZeilen.length, vorfaelle: vorfaelle.length, belegt };
+}
+
+const bereit = (async () => {
+  await ablage.oeffnen();
+  const jetzt = Date.now();
+  const stand = await ablage.laden({ jetztMs: jetzt, anzeigeSeit: new Date(jetzt - ANZEIGE_FENSTER_MS) });
+  const zahlen = wiederherstellen(stand);
+  if (ablage.art === 'mariadb') {
+    console.log(`Ablage: MariaDB. Geladen: ${zahlen.lehrkraefte} Lehrkraefte, ${zahlen.sitzungen} Sitzungen, ${zahlen.vorfaelle} Vorfaelle (${zahlen.belegt} Plaetze belegt).`);
+  } else {
+    console.log('Ablage: nur Arbeitsspeicher (kein DB_HOST) - ein Neustart verliert alle Vorfaelle.');
+  }
+  await pruefeJahreswechsel();
+})();
+
+// Haelt alles an, was dieser Server angestossen hat. Fuer das geordnete
+// Herunterfahren und fuer die Tests, die einen Neustart nachspielen.
+async function beenden() {
+  clearInterval(aufraeumer);
+  clearInterval(mandantenWache);
+  await new Promise(resolve => io.close(() => resolve()));
+  await ablage.leeren();
+}
 
 // --- Admin-Oberflaeche ---
 //
@@ -1135,9 +1295,26 @@ const PORT = process.env.PORT || 4000;
 // Nur beim direkten Start lauschen. Die Tests laden den Server als Modul und
 // waehlen selbst einen freien Port.
 if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+  bereit.then(() => {
+    server.listen(PORT, () => {
+      console.log(`Server listening on port ${PORT}`);
+    });
+  }).catch(err => {
+    console.error(`Start abgebrochen: ${err.message}`);
+    process.exit(1);
   });
+
+  // Docker beendet mit SIGTERM. Ohne eigenen Handler ignoriert Node das als
+  // Prozess 1 im Container, und nach zehn Sekunden kommt SIGKILL - mitten in
+  // die Warteschlange der Ablage. So wird erst zu Ende geschrieben.
+  for (const signal of ['SIGTERM', 'SIGINT']) {
+    process.once(signal, async () => {
+      console.log(`${signal}: fahre herunter.`);
+      await beenden();
+      await ablage.schliessen();
+      process.exit(0);
+    });
+  }
 }
 
-module.exports = { server, io };
+module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, ablage };

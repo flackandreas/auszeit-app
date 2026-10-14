@@ -19,12 +19,65 @@ services:
       AUSZEIT_ORIGIN: ${AUSZEIT_ORIGIN:-}
       # Gueltigkeit eines Sitzungstokens in Millisekunden (Vorgabe 14 h).
       AUSZEIT_SITZUNG_TTL_MS: ${AUSZEIT_SITZUNG_TTL_MS:-}
+      # Beginn des neuen Schuljahres, MM-TT. Dann wird das Protokoll des
+      # alten geloescht.
+      AUSZEIT_SCHULJAHR_STICHTAG: ${AUSZEIT_SCHULJAHR_STICHTAG:-08-01}
       # Verwaltung. Ohne Token bleibt sie abgeschaltet. Mit AUSZEIT_ADMIN_PORT
       # laeuft sie auf einem eigenen, nicht veroeffentlichten Port.
       AUSZEIT_ADMIN_TOKEN: ${AUSZEIT_ADMIN_TOKEN:-}
       AUSZEIT_ADMIN_PORT: ${AUSZEIT_ADMIN_PORT:-}
+      # Das Protokoll. Das Passwort steht nirgends im Klartext, sondern wird
+      # beim ersten Start erzeugt (Dienst "geheimnis").
+      DB_HOST: db
+      DB_NAME: auszeit
+      DB_USER: auszeit
+      DB_PASS_FILE: /geheimnis/db
     volumes:
-      # Die Mandanten muessen den naechsten Build ueberleben - bis hierher war
-      # die App bewusst vergesslich.
+      # Die Mandanten muessen den naechsten Build ueberleben.
       - ./daten:/app/daten
+      - geheimnis:/geheimnis:ro
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+  # Vorfaelle, Sitzungen und Lehrkraefte. Kein veroeffentlichter Port: Nur
+  # Auszeit spricht mit der Datenbank, und was nicht erreichbar ist, kann nicht
+  # angegriffen werden. Das Abbild laeuft auch auf dem Raspberry Pi (arm64).
+  db:
+    image: mariadb:10.11
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Berlin
+      MARIADB_DATABASE: auszeit
+      MARIADB_USER: auszeit
+      MARIADB_PASSWORD_FILE: /geheimnis/db
+      # Root wird nie gebraucht; ein zufaelliges Passwort ist besser als ein
+      # bekanntes.
+      MARIADB_RANDOM_ROOT_PASSWORD: "1"
+    volumes:
+      - db-daten:/var/lib/mysql
+      - geheimnis:/geheimnis:ro
+    depends_on:
+      geheimnis:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Erzeugt beim allerersten Start das Datenbankpasswort und legt es in ein
+  # eigenes Volume. Kein mitgeliefertes Passwort: das ueberlebte jede
+  # Inbetriebnahme. Und keine Pflichtangabe in einer .env: "docker compose up"
+  # soll ohne Vorbereitung laufen. Danach tut der Dienst nichts mehr.
+  geheimnis:
+    image: mariadb:10.11
+    entrypoint: ["sh", "-c", "[ -s /geheimnis/db ] || { head -c 32 /dev/urandom | base64 | tr -d '\\n/+=' > /geheimnis/db && chmod 0444 /geheimnis/db; }"]
+    volumes:
+      - geheimnis:/geheimnis
+    restart: "no"
+
+volumes:
+  db-daten:
+  geheimnis:
