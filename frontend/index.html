@@ -125,6 +125,9 @@
             </div>
           </div>
 
+          <!-- Nur fuer die Rolle Verwaltung im Schulbetrieb. -->
+          <button id="btn-schuelerliste" class="btn btn-zweitrangig hidden">Schülerliste verwalten</button>
+
           <div class="emergency-action mt-auto">
             <button id="btn-emergency" class="btn btn-danger btn-huge pulse-danger">
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
@@ -145,16 +148,57 @@
         </header>
 
         <main class="emergency-content">
-          <div class="input-group">
+          <!-- Freitext: ohne Portal und bei Demo-Mandanten. -->
+          <div class="input-group" id="namensfeld">
             <label for="student-name">Name des Schülers (optional)</label>
             <input type="text" id="student-name" placeholder="z.B. Max Mustermann">
             <p id="demo-hinweis" class="demo-hinweis hidden">Testbetrieb – bitte keine echten Schülernamen eingeben.</p>
+          </div>
+
+          <!-- Auswahl aus der Schuelerliste im Schulbetrieb. Die zuletzt
+               genutzte Klasse ist vorausgewaehlt: Schueler antippen, Kollegin
+               antippen - zwei Tipps mitten in der Stunde. -->
+          <div id="schueler-auswahl" class="schueler-auswahl hidden">
+            <div class="auswahl-kopf">
+              <span class="auswahl-titel">Schüler</span>
+              <span id="schueler-gewaehlt" class="schueler-gewaehlt">bitte antippen</span>
+            </div>
+            <input type="search" id="schueler-suche" class="schueler-suche" placeholder="Name suchen" autocomplete="off" aria-label="Schüler suchen">
+            <div id="klassen-leiste" class="klassen-leiste" role="tablist" aria-label="Klassen"></div>
+            <div id="schueler-raster" class="schueler-raster"></div>
+            <p id="liste-leer" class="liste-hinweis hidden">Noch keine Schülerliste. Die Verwaltung kann sie unter „Schülerliste verwalten“ einfügen – bis dahin geht die Auszeit ohne Namen.</p>
           </div>
 
           <h3 class="mt-4">Verfügbare Kollegen:</h3>
           <div id="available-teachers-list" class="teachers-list">
             <!-- Dynamically populated via JS -->
             <div class="empty-state">Suche verfügbare Kollegen...</div>
+          </div>
+        </main>
+      </section>
+
+      <!-- Schuelerliste einfuegen: nur fuer die Rolle Verwaltung. -->
+      <section id="schueler-view" class="view">
+        <header class="app-header">
+          <button id="btn-zurueck-liste" class="icon-btn" aria-label="Zurück">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+          </button>
+          <h2>Schülerliste</h2>
+          <div style="width:24px"></div>
+        </header>
+
+        <main class="emergency-content">
+          <div class="glass-card liste-karte">
+            <p id="liste-stand" class="liste-stand">Noch keine Schülerliste.</p>
+            <label for="liste-eingabe" class="liste-label">Liste einfügen – eine Zeile je Schüler mit Klasse und Name</label>
+            <textarea id="liste-eingabe" class="liste-eingabe" rows="10" spellcheck="false" placeholder="7a; Müller, Anna&#10;7a Ben Schmidt&#10;Weber, Paul; 7b"></textarea>
+            <p class="liste-hinweis">Erkannt werden „Nachname, Vorname“ und „Vorname Nachname“, die Klasse vorn oder hinten, auch Spalten aus Excel, Untis oder ASV-BW. Wer in einer eingefügten Klasse fehlt, wird archiviert; andere Klassen bleiben unberührt.</p>
+            <button id="btn-vorschau" class="btn btn-primary">Vorschau</button>
+          </div>
+
+          <div id="vorschau" class="glass-card liste-karte hidden">
+            <div id="vorschau-inhalt"></div>
+            <button id="btn-uebernehmen" class="btn btn-primary">Übernehmen</button>
           </div>
         </main>
       </section>

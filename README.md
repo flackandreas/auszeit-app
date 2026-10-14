@@ -11,7 +11,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 - **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3+). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
-  - Optionaler Eintrag des Schülernamens.
+  - Im Schulbetrieb Auswahl aus der Schülerliste: Klasse ist vorausgewählt, Schüler antippen, Kollegin antippen – zwei Tipps (siehe [Schülerliste](#schülerliste)). Ohne Portal und bei Demo-Mandanten ein freies Namensfeld.
   - Direktes Absenden der Auszeit-Anforderung per Klick.
 - **Sofort-Benachrichtigung & Ankunftsbestätigung**:
   - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration.
@@ -66,6 +66,7 @@ auszeit-app/
 │   ├── ablage/           # Dauerhafte Ablage: MariaDB oder nur Arbeitsspeicher
 │   ├── migrationen/      # Datenbankschema, beim Start eingespielt
 │   ├── schuljahr.js      # Schuljahr eines Zeitpunkts, Stichtag
+│   ├── schueler.js       # Schülerliste: Zeilen zerlegen, Abgleich mit dem Bestand
 │   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
 │   ├── portal.js         # Anmeldung über das SchulOS-Portal (OpenID Connect)
 │   ├── kekse.js          # Cookies lesen – für Routen und Socket-Handshake
@@ -159,12 +160,15 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
 | `login` | Client ➔ Server | Drei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`) – oder **über das Portal** (`portal: true` und Raum); wer die Lehrkraft ist, hat dann schon der Handshake aus dem Cookie gelesen. Eine mitgeschickte Kennung wird nie beachtet. |
-| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft, angebotene Plätze). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
+| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft, angebotene Plätze, `listenModus`, Rolle `verwaltung`). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
+| `schuelerliste` | Server ➔ Clients der Schule | Die aktiven Schüler (Kennung, Klasse, Vor- und Nachname) – nach der Anmeldung und nach jedem Import. Nur im Schulbetrieb. |
+| `schueler_vorschau` | Client ➔ Server (mit Rückmeldung) | Zerlegt eine eingefügte Liste und meldet, was ein Import bewirken würde. Nur Rolle Verwaltung. |
+| `schueler_uebernehmen` | Client ➔ Server (mit Rückmeldung) | Übernimmt die Liste. Nur Rolle Verwaltung. |
 | `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule`, `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt), `nur_portal` (Anmeldung mit Code abgeschaltet), `portal_sitzung_fehlt` oder `raum_fehlt`. |
 | `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. |
 | `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
-| `request_help` | Client ➔ Server | Startet eine Auszeit. Der Platz wird sofort belegt, nicht erst bei der Ankunft. |
+| `request_help` | Client ➔ Server | Startet eine Auszeit. Der Platz wird sofort belegt, nicht erst bei der Ankunft. Im Schulbetrieb mit `schuelerKennung` aus der Liste (ein Freitext wird dort verworfen), sonst mit `studentName`. |
 | `help_requested` | Server ➔ Sender | Rückmeldung, ob die Verweisung angenommen wurde. |
 | `incoming_student` | Server ➔ Empfänger | Benachrichtigt über den Schüler auf dem Weg. |
 | `confirm_arrival` | Empfänger ➔ Server | Bestätigt das Eintreffen; Vorfall geht auf `betreut`. |
@@ -330,7 +334,8 @@ Tabellen:
 | :--- | :--- |
 | `lehrkraefte` | Kennung, Schule, `sub` bei Anmeldung über das Portal, Name, Kürzel, Raum, Rolle „Verwaltung“ |
 | `sitzungen` | Hash des Tokens, Kennung, Ablauf, bei Portal-Anmeldung `sid` und ID-Token |
-| `vorfaelle` | Schuljahr, Schüler, abgebende und aufnehmende Lehrkraft samt Raum, Zustand, je Zustandswechsel ein Zeitpunkt (`angefordert_am`, `angekommen_am`, `rueckholwunsch_am`, `zurueckgeschickt_am`, `zurueck_am`, `beendet_am`), Art des Abschlusses (`zurueck`, `einseitig`, `abgebrochen`) |
+| `schueler` | Schuljahr, Klasse, Vor- und Nachname, normalisierter Schlüssel, Zeitpunkt der Archivierung |
+| `vorfaelle` | Schuljahr, Schüler (Kennung aus der Liste, nur bei Freitext ein Name), abgebende und aufnehmende Lehrkraft samt Raum, Zustand, je Zustandswechsel ein Zeitpunkt (`angefordert_am`, `angekommen_am`, `rueckholwunsch_am`, `zurueckgeschickt_am`, `zurueck_am`, `beendet_am`), Art des Abschlusses (`zurueck`, `einseitig`, `abgebrochen`) |
 
 **Alle Zeitpunkte stehen in UTC.** Sonst hinge ihre Bedeutung an der Zeitzone
 des Containers, und um die Zeitumstellung herum wäre eine Stunde doppeldeutig.
@@ -351,13 +356,62 @@ docker compose exec db sh -c 'mariadb -uauszeit -p"$(cat /geheimnis/db)" auszeit
 **Im Verbund** liegen die Daten in `db_auszeit` der gemeinsamen MariaDB;
 `DB_AUSZEIT_PASSWORT` in der `.env` des Portals ist dafür Pflicht.
 
+### Schülerliste
+
+Freitext macht ein dauerhaftes Protokoll unbrauchbar – „Max“, „Max M.“ und
+„max müller“ wären drei Schüler. Im **Schulbetrieb** wählen Lehrkräfte deshalb
+aus einer Liste; im Protokoll steht nur die Kennung des Schülers, Name und
+Klasse kommen aus der Liste.
+
+Schulbetrieb heißt: Anmeldung über das Portal und kein Demo-Mandant. Ohne
+Portal gibt es keine Rolle, die eine Liste einfügen könnte, und ohne echte
+Identitäten taugt das Protokoll dort ohnehin wenig – dort und bei
+Demo-Mandanten bleibt das freie Namensfeld.
+
+**Auswahl.** Unter „Schüler verweisen“ stehen die Klassen als Schaltflächen, die
+zuletzt genutzte ist vorausgewählt. Schüler antippen, Kollegin antippen – zwei
+Tipps mitten in der Stunde. Das Suchfeld findet Namen über alle Klassen
+(Umlaute und Akzente egal). Ohne Wahl wird nicht geschickt; für jemanden, der
+noch nicht auf der Liste steht, gibt es „Ohne Namen“. Solange eine Schule noch
+gar keine Liste hat, geht die Auszeit ohne Namen.
+
+**Einfügen.** Lehrkräfte mit der Rolle „Verwaltung“ (Portalgruppen aus
+`PORTAL_ADMIN_GRUPPEN`, Vorgabe `Schulleitung`; soll das Sekretariat die
+Listen pflegen, gehört es dort hinein) sehen „Schülerliste verwalten“ – eine
+Ansicht in der App, nicht in der Betreiber-Verwaltung. Eingefügt wird eine
+Zeile je Schüler mit Klasse und Name, zuerst als Vorschau:
+
+```text
+7a; Müller, Anna          Export aus IServ, Untis, ASV-BW (Semikolon)
+7a⇥Klein⇥Lea              Spalten aus Excel: Klasse, Familienname, Rufname
+7a Tim Becker             von Hand getippt
+Schulz, Paul 7a           Klasse am Ende
+1. 7a Noah Richter        nummerierte Listen
+```
+
+Die Klasse ist das Feld mit einer Ziffer (Namen haben keine), dazu `EF`; `07A`
+wird zu `7a`, `j1` zu `J1`. „Nachname, Vorname“ und „Vorname Nachname“ ergeben
+denselben Schlüssel – die Zerlegung folgt `Roster::parseNames` aus dem
+Unterrichtsmodul. Zeilen, die nicht passen, nennt die Vorschau mit Grund.
+
+**Abgleich.** Über einen normalisierten Schlüssel aus Klasse und Name
+(Groß/klein, Umlaute, Akzente egal): Ein zweiter Import derselben Liste legt
+niemanden doppelt an. Wer **in einer eingefügten Klasse** fehlt, wird
+archiviert, nicht gelöscht – an laufenden und protokollierten Vorfällen hängt
+seine Kennung. Klassen, die im Import nicht vorkommen, bleiben unberührt; so
+lassen sich etwa erst die Pilotklassen einfügen. Taucht ein archivierter
+Schüler wieder auf, kommt er mit derselben Kennung zurück.
+
+Die Liste gehört zum Schuljahr: Zum Schuljahreswechsel fällt sie mit dem
+Protokoll weg. Eingefügt wird sie deshalb nach dem Stichtag.
+
 ### Aufbewahrung
 
 Zwei Regeln, je nachdem, ob ein Mandant als Demo markiert ist (`demo: true`):
 
 **Schulbetrieb.** Das Protokoll ist eine Vorgabe der Schule. Vorfälle bleiben
 mit Namen bis zum Beginn des neuen Schuljahres; dann löscht Auszeit alle
-Vorfälle früherer Schuljahre und schreibt die Anzahl ins Log. Das Schuljahr
+Vorfälle und Schülerlisten früherer Schuljahre und schreibt die Anzahl ins Log. Das Schuljahr
 steht als Spalte am Vorfall. Ein Vorfall, den nach 24 Stunden niemand beendet
 hat, wird als `abgebrochen` geschlossen statt gelöscht – auch eine Meldung, auf
 die niemand reagiert hat, gehört ins Protokoll. Aus „Meine Auszeiten“

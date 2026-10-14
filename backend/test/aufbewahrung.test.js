@@ -115,13 +115,13 @@ test('Schuljahreswechsel mit vorgegebener Uhrzeit', async () => {
 
   // Am letzten Abend des Schuljahres passiert nichts.
   const vorher = await testserver.instanz.pruefeJahreswechsel(new Date(schuljahr + 1, 6, 31, 23, 59, 59));
-  assert.equal(vorher, 0);
+  assert.equal(vorher.vorfaelle, 0);
   assert.ok(await inAblage(v.id));
 
   // Ab Mitternacht des Stichtags faellt alles aus dem alten Schuljahr weg.
   const imAltenJahr = testserver.instanz.ablage.inhalt().vorfaelle.filter(z => z.schuljahr === schuljahr).length;
   const geloescht = await testserver.instanz.pruefeJahreswechsel(new Date(schuljahr + 1, 7, 1, 0, 0, 1));
-  assert.equal(geloescht, imAltenJahr);
+  assert.equal(geloescht.vorfaelle, imAltenJahr);
   assert.equal(await inAblage(v.id), undefined);
   assert.ok(
     testserver.protokoll.some(z => z.includes(`Schuljahreswechsel: ${imAltenJahr} Vorfaelle`)),
@@ -129,5 +129,5 @@ test('Schuljahreswechsel mit vorgegebener Uhrzeit', async () => {
   );
 
   // Ein zweiter Lauf am selben Tag findet nichts mehr.
-  assert.equal(await testserver.instanz.pruefeJahreswechsel(new Date(schuljahr + 1, 7, 1, 12, 0)), 0);
+  assert.equal((await testserver.instanz.pruefeJahreswechsel(new Date(schuljahr + 1, 7, 1, 12, 0))).vorfaelle, 0);
 });

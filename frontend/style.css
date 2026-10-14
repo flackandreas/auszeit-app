@@ -691,3 +691,110 @@ a.btn { text-decoration: none; }
   to { opacity: 1; transform: scale(1); }
 }
 
+
+/* --- Schuelerliste: Auswahl und Einfuegen --- */
+
+.btn-zweitrangig {
+  background: var(--glass-bg);
+  color: var(--primary-hover);
+  border: 1px solid rgba(180, 83, 9, 0.28);
+  margin-top: 1rem;
+}
+.btn-zweitrangig:hover { background: var(--akzent-hell); }
+.btn.hidden { display: none; }
+
+.schueler-auswahl { display: flex; flex-direction: column; gap: 0.6rem; }
+.schueler-auswahl.hidden { display: none; }
+#namensfeld.hidden { display: none; }
+
+.auswahl-kopf { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+.auswahl-titel { font-weight: 600; color: var(--text-secondary); font-size: 0.875rem; }
+.schueler-gewaehlt { font-weight: 700; color: var(--text-secondary); text-align: right; }
+.schueler-gewaehlt.gewaehlt { color: var(--primary-hover); }
+
+.schueler-suche {
+  width: 100%;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: #fff;
+  font: inherit;
+  color: var(--text-primary);
+}
+.schueler-suche:focus { outline: 2px solid var(--primary-glow); border-color: var(--primary); }
+
+/* Die Klassen in einer Zeile zum Wischen - auf dem Handy passen nicht alle
+   nebeneinander, und umbrechen hiesse: die Namen rutschen nach unten. */
+.klassen-leiste {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding-bottom: 0.2rem;
+  scrollbar-width: none;
+}
+.klassen-leiste::-webkit-scrollbar { display: none; }
+
+.chip {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0.5rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.chip.aktiv { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* Grosse Flaechen: getippt wird im Stehen, mit der anderen Hand an der Tafel. */
+.schueler-raster {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 0.4rem;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+.schueler-knopf {
+  min-height: 48px;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.schueler-knopf .klasse-marke { display: block; font-size: 0.75rem; color: var(--text-secondary); }
+.schueler-knopf.gewaehlt { background: var(--akzent-hell); border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-glow); }
+.schueler-knopf.still { color: var(--text-secondary); font-style: italic; }
+
+.liste-hinweis { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.4; }
+.liste-hinweis.hidden { display: none; }
+
+.liste-karte { display: flex; flex-direction: column; gap: 0.75rem; }
+.liste-karte.hidden { display: none; }
+.liste-stand { font-weight: 600; }
+.liste-label { font-weight: 600; font-size: 0.875rem; color: var(--text-secondary); }
+.liste-eingabe {
+  width: 100%;
+  padding: 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: #fff;
+  font: 0.875rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-primary);
+  resize: vertical;
+}
+.vorschau-zahlen { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.vorschau-zahl { padding: 0.3rem 0.6rem; border-radius: 8px; background: var(--bg-secondary); font-weight: 600; font-size: 0.875rem; }
+.vorschau-zahl.warnung { background: #fee2e2; color: var(--danger-hover); }
+.vorschau-gruppe h4 { margin: 0.5rem 0 0.25rem; font-size: 0.9rem; }
+.vorschau-gruppe ul { margin: 0; padding-left: 1.1rem; font-size: 0.875rem; max-height: 10rem; overflow-y: auto; }
+.vorschau-gruppe.warnung h4 { color: var(--danger-hover); }
+
+#schueler-view .emergency-content { gap: 1rem; }

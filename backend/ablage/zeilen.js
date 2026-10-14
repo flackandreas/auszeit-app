@@ -40,13 +40,41 @@ function lehrkraftAusZeile(zeile) {
   };
 }
 
+function schuelerZeile(s) {
+  return {
+    kennung: s.kennung,
+    schul_id: s.schulId,
+    schuljahr: s.schuljahr,
+    klasse: s.klasse,
+    vorname: s.vorname,
+    nachname: s.nachname,
+    schluessel: s.schluessel,
+    archiviert_am: datum(s.archiviertAm)
+  };
+}
+
+function schuelerAusZeile(z) {
+  return {
+    kennung: z.kennung,
+    schulId: z.schul_id,
+    schuljahr: Number(z.schuljahr),
+    klasse: z.klasse,
+    vorname: z.vorname,
+    nachname: z.nachname,
+    schluessel: z.schluessel,
+    archiviertAm: datum(z.archiviert_am)
+  };
+}
+
 function vorfallZeile(v) {
   return {
     id: v.id,
     schul_id: v.schulId,
     schuljahr: v.schuljahr,
     schueler_kennung: v.schuelerKennung || null,
-    schueler_name: v.studentName || '',
+    // Kommt der Schueler aus der Liste, steht im Protokoll nur seine
+    // Kennung. Der Name gehoert in die Liste und faellt mit ihr weg.
+    schueler_name: v.schuelerKennung ? '' : (v.studentName || ''),
     sender_kennung: v.senderId,
     sender_name: v.senderName,
     sender_raum: v.senderRaum || '',
@@ -96,4 +124,6 @@ function vorfallAusZeile(z) {
   return v;
 }
 
-module.exports = { lehrkraftZeile, lehrkraftAusZeile, vorfallZeile, vorfallAusZeile };
+module.exports = {
+  lehrkraftZeile, lehrkraftAusZeile, schuelerZeile, schuelerAusZeile, vorfallZeile, vorfallAusZeile
+};

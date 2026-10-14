@@ -10,7 +10,8 @@ const { erstelleSitzungen } = require('./sitzungen');
 const { liesKeks } = require('./kekse');
 const { konfigurationAusUmgebung, erstellePortal } = require('./portal');
 const { standardAblage } = require('./ablage');
-const { lehrkraftAusZeile, vorfallAusZeile } = require('./ablage/zeilen');
+const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile } = require('./ablage/zeilen');
+const { zerlegeListe, planeImport, vergleicheSchueler, anzeige } = require('./schueler');
 const { stichtagAus, schuljahrVon, schuljahrText } = require('./schuljahr');
 
 const { normalisiereSchulcode, PIN_MINDESTLAENGE } = speicher;
@@ -223,6 +224,10 @@ const io = new Server(server, {
 const teachers = new Map();        // teacherId -> Lehrkraft
 const socketToTeacher = new Map(); // socket.id -> teacherId
 const incidents = [];
+// Die Schuelerlisten aller Schulen, auch archivierte Eintraege - an ihnen
+// haengen noch Vorfaelle. Eine Schule hat einige hundert, das passt in den
+// Speicher.
+const schuelerListe = new Map(); // kennung -> Schueler
 
 // Mindestens ein Schultag, damit niemand mitten im Unterricht den Code erneut
 // eingeben muss - aber nicht laenger: auf einem Raum-PC, an dem sich niemand
@@ -346,6 +351,40 @@ function neueVorfallsKennung() {
 function istDemo(schulId) {
   const schule = SCHULEN.get(schulId);
   return Boolean(schule && schule.demo);
+}
+
+// Schueler aus der Liste statt Freitext - im Schulbetrieb mit Anmeldung ueber
+// das Portal. Ohne Portal gibt es keine Rolle "Verwaltung", die eine Liste
+// einfuegen koennte, und ohne echte Identitaeten taugt das Protokoll dort
+// ohnehin wenig; Demo-Mandanten behalten das Namensfeld.
+function listenModus(schulId) {
+  return Boolean(portal) && !istDemo(schulId);
+}
+
+function aktuellesSchuljahr() {
+  return schuljahrVon(new Date(), STICHTAG);
+}
+
+// Der Bestand einer Schule im laufenden Schuljahr, auch archivierte.
+function schuelerDerSchule(schulId) {
+  const schuljahr = aktuellesSchuljahr();
+  return [...schuelerListe.values()].filter(s => s.schulId === schulId && s.schuljahr === schuljahr);
+}
+
+// Was die Geraete zur Auswahl bekommen: nur aktive Schueler, nur das Noetige.
+function auswahlListe(schulId) {
+  return schuelerDerSchule(schulId)
+    .filter(s => !s.archiviertAm)
+    .sort(vergleicheSchueler)
+    .map(s => ({ kennung: s.kennung, klasse: s.klasse, vorname: s.vorname, nachname: s.nachname }));
+}
+
+function neueSchuelerKennung() {
+  let kennung;
+  do {
+    kennung = crypto.randomBytes(9).toString('base64url');
+  } while (schuelerListe.has(kennung));
+  return kennung;
 }
 
 function text(wert, maxLaenge) {
@@ -823,10 +862,13 @@ io.on('connection', (socket) => {
       schulId: teacher.schulId,
       schulName: schule.name,
       demo: schule.demo,
+      listenModus: listenModus(teacher.schulId),
+      verwaltung: Boolean(teacher.verwaltung),
       // Nur bei der Erstanmeldung und nur an dieses eine Geraet - nie an den
       // Raum der Lehrkraft, nie in eine Liste.
       ...(token ? { token } : {})
     });
+    if (listenModus(teacher.schulId)) socket.emit('schuelerliste', auswahlListe(teacher.schulId));
 
     broadcastAvailableTeachers(teacher.schulId);
     syncUserIncidents(teacher.id);
@@ -876,6 +918,24 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Im Schulbetrieb kommt der Schueler aus der Liste, ein mitgeschickter
+    // Freitext zaehlt dort nicht. Ohne Schueler geht es auch - etwa fuer
+    // jemanden, der noch nicht auf der Liste steht.
+    const schueler = {};
+    if (listenModus(sender.schulId)) {
+      const kennung = data && typeof data.schuelerKennung === 'string' ? data.schuelerKennung : '';
+      if (kennung) {
+        const s = schuelerListe.get(kennung);
+        if (!s || s.schulId !== sender.schulId || s.archiviertAm || s.schuljahr !== aktuellesSchuljahr()) {
+          socket.emit('help_requested', { success: false, message: 'Schüler steht nicht mehr auf der Liste.' });
+          return;
+        }
+        Object.assign(schueler, { schuelerKennung: s.kennung, studentName: anzeige(s), klasse: s.klasse });
+      }
+    } else {
+      schueler.studentName = text(data && data.studentName, 60);
+    }
+
     const jetzt = new Date();
     const incident = {
       id: neueVorfallsKennung(),
@@ -887,7 +947,8 @@ io.on('connection', (socket) => {
       receiverId: receiver.id,
       receiverName: receiver.name,
       receiverRaum: receiver.room,
-      studentName: text(data && data.studentName, 60),
+      studentName: '',
+      ...schueler,
       status: UNTERWEGS,
       timestamp: jetzt
     };
@@ -1016,6 +1077,86 @@ io.on('connection', (socket) => {
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
     broadcastAvailableTeachers(teacher.schulId);
+  });
+
+  // --- Schuelerliste einfuegen ---
+  //
+  // Nur fuer die Rolle "Verwaltung" aus dem Portal - nicht in der
+  // Betreiber-Verwaltung, die gehoert dem Anbieter. Erst die Vorschau, dann
+  // das Uebernehmen; beide antworten ueber die Rueckmeldung von Socket.IO.
+  const LISTE_HOECHSTENS = 200000; // Zeichen - eine ganze Schule passt.
+
+  function importVorbereiten(data, antwort) {
+    if (typeof antwort !== 'function') return null;
+    const teacher = aktuelleLehrkraft(socket);
+    if (!teacher || !teacher.verwaltung || !listenModus(teacher.schulId)) {
+      antwort({ ok: false, grund: 'keine_berechtigung' });
+      return null;
+    }
+    const { eintraege, fehler } = zerlegeListe(String((data && data.text) || '').slice(0, LISTE_HOECHSTENS));
+    if (eintraege.length === 0) {
+      antwort({ ok: false, grund: 'leer', fehler });
+      return null;
+    }
+    return { teacher, eintraege, fehler, plan: planeImport(schuelerDerSchule(teacher.schulId), eintraege) };
+  }
+
+  const zeile = s => ({ klasse: s.klasse, name: anzeige(s) });
+
+  socket.on('schueler_vorschau', (data, antwort) => {
+    const vorbereitet = importVorbereiten(data, antwort);
+    if (!vorbereitet) return;
+    const { plan, fehler } = vorbereitet;
+    antwort({
+      ok: true,
+      vorschau: {
+        neu: plan.neu.sort(vergleicheSchueler).map(zeile),
+        reaktiviert: plan.reaktiviert.sort(vergleicheSchueler).map(zeile),
+        archiviert: plan.archiviert.sort(vergleicheSchueler).map(zeile),
+        bleibt: plan.bleibt.length,
+        jeKlasse: plan.jeKlasse,
+        fehler
+      }
+    });
+  });
+
+  socket.on('schueler_uebernehmen', (data, antwort) => {
+    const vorbereitet = importVorbereiten(data, antwort);
+    if (!vorbereitet) return;
+    const { teacher, plan } = vorbereitet;
+    const jetzt = new Date();
+    const schuljahr = aktuellesSchuljahr();
+    const geaendert = [];
+
+    for (const e of plan.neu) {
+      const s = { ...e, kennung: neueSchuelerKennung(), schulId: teacher.schulId, schuljahr, archiviertAm: null };
+      schuelerListe.set(s.kennung, s);
+      geaendert.push(s);
+    }
+    // Wieder da oder geblieben: die Schreibweise der neuen Liste gilt.
+    for (const e of [...plan.reaktiviert, ...plan.bleibt]) {
+      const s = schuelerListe.get(e.kennung);
+      const vorher = `${s.vorname}|${s.nachname}|${s.archiviertAm}`;
+      Object.assign(s, { vorname: e.vorname, nachname: e.nachname, archiviertAm: null });
+      if (`${s.vorname}|${s.nachname}|${s.archiviertAm}` !== vorher) geaendert.push(s);
+    }
+    for (const e of plan.archiviert) {
+      const s = schuelerListe.get(e.kennung);
+      s.archiviertAm = jetzt;
+      geaendert.push(s);
+    }
+    ablage.schuelerSpeichern(geaendert);
+
+    const ergebnis = {
+      neu: plan.neu.length,
+      reaktiviert: plan.reaktiviert.length,
+      archiviert: plan.archiviert.length,
+      bleibt: plan.bleibt.length
+    };
+    console.log(`Schuelerliste ${teacher.schulId}: ${ergebnis.neu} neu, ${ergebnis.reaktiviert} wieder aufgenommen, ${ergebnis.archiviert} archiviert, ${ergebnis.bleibt} unveraendert.`);
+    // Alle Geraete der Schule bekommen die neue Auswahl sofort.
+    io.to(`schule:${teacher.schulId}`).emit('schuelerliste', auswahlListe(teacher.schulId));
+    antwort({ ok: true, ergebnis });
   });
 
   // Abmeldung: Die Sitzung dieses Browsers endet, und zwar fuer alle seine
@@ -1185,9 +1326,14 @@ async function pruefeJahreswechsel(jetzt = new Date()) {
   for (const id of betroffen) syncUserIncidents(id);
   for (const schulId of schulen) broadcastAvailableTeachers(schulId);
 
+  // Die Schuelerlisten gehen mit: Sie gehoeren zum Schuljahr.
+  for (const [kennung, s] of schuelerListe) {
+    if (s.schuljahr < aktuell) schuelerListe.delete(kennung);
+  }
+
   const geloescht = await ablage.jahreswechsel(aktuell);
-  if (geloescht > 0) {
-    console.log(`Schuljahreswechsel: ${geloescht} Vorfaelle aus Schuljahren vor ${schuljahrText(aktuell)} geloescht.`);
+  if (geloescht.vorfaelle > 0 || geloescht.schueler > 0) {
+    console.log(`Schuljahreswechsel: ${geloescht.vorfaelle} Vorfaelle und ${geloescht.schueler} Eintraege der Schuelerlisten aus Schuljahren vor ${schuljahrText(aktuell)} geloescht.`);
   }
   return geloescht;
 }
@@ -1204,12 +1350,16 @@ if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
 // Lehrkraefte, ihre gueltigen Sitzungen und die Vorfaelle, die noch laufen
 // oder heute beendet wurden. Die Belegung ist kein eigener Zustand - sie folgt
 // aus den Vorfaellen, die unterwegs oder in Betreuung sind.
-function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle }) {
+function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle, schueler = [] }) {
   for (const zeile of lehrkraefte) teachers.set(zeile.kennung, lehrkraftAusZeile(zeile));
+  for (const zeile of schueler) schuelerListe.set(zeile.kennung, schuelerAusZeile(zeile));
   sitzungen.laden(sitzungsZeilen);
   let belegt = 0;
   for (const zeile of vorfaelle) {
     const vorfall = vorfallAusZeile(zeile);
+    // Im Protokoll steht nur die Kennung; Name und Klasse kommen aus der Liste.
+    const s = vorfall.schuelerKennung ? schuelerListe.get(vorfall.schuelerKennung) : undefined;
+    if (s) Object.assign(vorfall, { studentName: anzeige(s), klasse: s.klasse });
     incidents.push(vorfall);
     if (vorfall.status === UNTERWEGS || vorfall.status === BETREUT) {
       const receiver = teachers.get(vorfall.receiverId);

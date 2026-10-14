@@ -202,7 +202,7 @@ test('Neue Portal-Anmeldung findet dieselbe Lehrkraft samt laufender Auszeit', a
   dirk.emit('login', { schulId: '', name: 'Dirk', room: '108', pin: '4711' });
   await dirkDa;
   const geschickt = warteAuf(dirk, 'help_requested');
-  dirk.emit('request_help', { receiverId: carlaDaten.id, studentName: 'Lena Beispiel' });
+  dirk.emit('request_help', { receiverId: carlaDaten.id });
   const vorfall = (await geschickt).incident;
 
   // Die Portalsitzung endet, Carla meldet sich neu an.
@@ -217,7 +217,6 @@ test('Neue Portal-Anmeldung findet dieselbe Lehrkraft samt laufender Auszeit', a
   const laufend = await vorfaelle;
   assert.equal(laufend.length, 1);
   assert.equal(laufend[0].id, vorfall.id);
-  assert.equal(laufend[0].studentName, 'Lena Beispiel');
 });
 
 test('Zweites Geraet: dieselbe Lehrkraft, aber eine eigene Sitzung', async () => {

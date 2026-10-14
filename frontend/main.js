@@ -41,6 +41,24 @@ const btnBackDashboard = document.getElementById('btn-back-dashboard');
 const inputStudentName = document.getElementById('student-name');
 const teachersList = document.getElementById('available-teachers-list');
 const demoHinweis = document.getElementById('demo-hinweis');
+const namensfeld = document.getElementById('namensfeld');
+const schuelerAuswahl = document.getElementById('schueler-auswahl');
+const schuelerGewaehlt = document.getElementById('schueler-gewaehlt');
+const schuelerSuche = document.getElementById('schueler-suche');
+const klassenLeiste = document.getElementById('klassen-leiste');
+const schuelerRaster = document.getElementById('schueler-raster');
+const listeLeer = document.getElementById('liste-leer');
+
+// Schuelerliste einfuegen
+const schuelerView = document.getElementById('schueler-view');
+const btnSchuelerliste = document.getElementById('btn-schuelerliste');
+const btnZurueckListe = document.getElementById('btn-zurueck-liste');
+const listeStand = document.getElementById('liste-stand');
+const listeEingabe = document.getElementById('liste-eingabe');
+const btnVorschau = document.getElementById('btn-vorschau');
+const vorschauKarte = document.getElementById('vorschau');
+const vorschauInhalt = document.getElementById('vorschau-inhalt');
+const btnUebernehmen = document.getElementById('btn-uebernehmen');
 
 // Mandanten-Anzeige
 const schulName = document.getElementById('schul-name');
@@ -297,8 +315,234 @@ async function schulePruefen() {
 }
 
 function schuelerName(incident) {
-  return incident.studentName || 'Ein Schüler';
+  if (!incident.studentName) return 'Ein Schüler';
+  return incident.klasse ? `${incident.studentName} (${incident.klasse})` : incident.studentName;
 }
+
+// --- Schuelerliste ---
+//
+// Im Schulbetrieb waehlt die Lehrkraft den Schueler aus der Liste statt den
+// Namen zu tippen: Freitext machte das Protokoll unbrauchbar. Ziel sind zwei
+// Tipps mitten in der Stunde - die zuletzt genutzte Klasse ist vorausgewaehlt,
+// dann der Schueler, dann die Kollegin.
+let listenModus = false;
+let istVerwaltung = false;
+let schuelerliste = [];
+let gewaehlt = null; // ein Schueler, 'ohne' oder null
+let aktiveKlasse = '';
+
+function klassenSchluessel() {
+  return `auszeit_klasse${SCHULCODE ? ':' + SCHULCODE : ''}`;
+}
+
+function klassenDerListe() {
+  return [...new Set(schuelerliste.map(s => s.klasse))];
+}
+
+// Fuer die Suche: Gross/klein, Umlaute und Akzente zaehlen nicht.
+function suchform(text) {
+  return String(text).toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function zeigeGewaehlt() {
+  if (gewaehlt === 'ohne') {
+    schuelerGewaehlt.textContent = 'ohne Namen';
+  } else if (gewaehlt) {
+    schuelerGewaehlt.textContent = `${gewaehlt.vorname} ${gewaehlt.nachname} · ${gewaehlt.klasse}`;
+  } else {
+    schuelerGewaehlt.textContent = schuelerliste.length ? 'bitte antippen' : '';
+  }
+  schuelerGewaehlt.classList.toggle('gewaehlt', Boolean(gewaehlt));
+}
+
+function schuelerKnopf(text, unterzeile, istGewaehlt, beimTippen, still = false) {
+  const knopf = document.createElement('button');
+  knopf.type = 'button';
+  knopf.className = `schueler-knopf${istGewaehlt ? ' gewaehlt' : ''}${still ? ' still' : ''}`;
+  knopf.textContent = text;
+  if (unterzeile) {
+    const marke = document.createElement('span');
+    marke.className = 'klasse-marke';
+    marke.textContent = unterzeile;
+    knopf.appendChild(marke);
+  }
+  knopf.addEventListener('click', beimTippen);
+  return knopf;
+}
+
+function zeichneAuswahl() {
+  namensfeld.classList.toggle('hidden', listenModus);
+  schuelerAuswahl.classList.toggle('hidden', !listenModus);
+  if (!listenModus) return;
+
+  const leer = schuelerliste.length === 0;
+  listeLeer.classList.toggle('hidden', !leer);
+  schuelerSuche.classList.toggle('hidden', leer);
+  zeigeGewaehlt();
+
+  const klassen = klassenDerListe();
+  if (!klassen.includes(aktiveKlasse)) aktiveKlasse = klassen[0] || '';
+  const suche = suchform(schuelerSuche.value.trim());
+
+  klassenLeiste.innerHTML = '';
+  for (const klasse of klassen) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = `chip${!suche && klasse === aktiveKlasse ? ' aktiv' : ''}`;
+    chip.textContent = klasse;
+    chip.setAttribute('role', 'tab');
+    chip.setAttribute('aria-selected', String(!suche && klasse === aktiveKlasse));
+    chip.addEventListener('click', () => {
+      aktiveKlasse = klasse;
+      try { localStorage.setItem(klassenSchluessel(), klasse); } catch (err) { /* nur Bequemlichkeit */ }
+      schuelerSuche.value = '';
+      zeichneAuswahl();
+    });
+    klassenLeiste.appendChild(chip);
+  }
+
+  // Mit Suchbegriff ueber alle Klassen, sonst die gewaehlte Klasse.
+  const treffer = suche
+    ? schuelerliste.filter(s => suchform(`${s.vorname} ${s.nachname}`).includes(suche))
+    : schuelerliste.filter(s => s.klasse === aktiveKlasse);
+
+  schuelerRaster.innerHTML = '';
+  for (const s of treffer) {
+    schuelerRaster.appendChild(schuelerKnopf(
+      `${s.vorname} ${s.nachname}`,
+      suche ? s.klasse : '',
+      gewaehlt && gewaehlt !== 'ohne' && gewaehlt.kennung === s.kennung,
+      () => { gewaehlt = s; zeichneAuswahl(); }
+    ));
+  }
+  // Fuer jemanden, der (noch) nicht auf der Liste steht.
+  if (!leer) {
+    schuelerRaster.appendChild(schuelerKnopf('Ohne Namen', '', gewaehlt === 'ohne',
+      () => { gewaehlt = 'ohne'; zeichneAuswahl(); }, true));
+  }
+}
+
+function auswahlZuruecksetzen() {
+  gewaehlt = null;
+  schuelerSuche.value = '';
+  try { aktiveKlasse = localStorage.getItem(klassenSchluessel()) || aktiveKlasse; } catch (err) { /* siehe oben */ }
+  zeichneAuswahl();
+}
+
+schuelerSuche.addEventListener('input', zeichneAuswahl);
+
+socket.on('schuelerliste', (liste) => {
+  schuelerliste = Array.isArray(liste) ? liste : [];
+  // Wurde der gewaehlte Schueler gerade archiviert, gilt die Wahl nicht mehr.
+  if (gewaehlt && gewaehlt !== 'ohne' && !schuelerliste.some(s => s.kennung === gewaehlt.kennung)) gewaehlt = null;
+  zeichneAuswahl();
+  zeichneListenStand();
+});
+
+// --- Schuelerliste einfuegen (Rolle Verwaltung) ---
+
+function zeichneListenStand() {
+  if (schuelerliste.length === 0) {
+    listeStand.textContent = 'Noch keine Schülerliste.';
+    return;
+  }
+  const jeKlasse = klassenDerListe()
+    .map(k => `${k}: ${schuelerliste.filter(s => s.klasse === k).length}`).join(' · ');
+  listeStand.textContent = `Aktuell ${schuelerliste.length} Schüler – ${jeKlasse}`;
+}
+
+function vorschauGruppe(titel, eintraege, warnung = false) {
+  if (eintraege.length === 0) return null;
+  const gruppe = document.createElement('div');
+  gruppe.className = `vorschau-gruppe${warnung ? ' warnung' : ''}`;
+  const kopf = document.createElement('h4');
+  kopf.textContent = `${titel} (${eintraege.length})`;
+  const liste = document.createElement('ul');
+  for (const text of eintraege) {
+    const punkt = document.createElement('li');
+    punkt.textContent = text;
+    liste.appendChild(punkt);
+  }
+  gruppe.append(kopf, liste);
+  return gruppe;
+}
+
+function zeigeVorschau(v) {
+  vorschauInhalt.innerHTML = '';
+  const zahlen = document.createElement('div');
+  zahlen.className = 'vorschau-zahlen';
+  const zahl = (text, warnung = false) => {
+    const el = document.createElement('span');
+    el.className = `vorschau-zahl${warnung ? ' warnung' : ''}`;
+    el.textContent = text;
+    zahlen.appendChild(el);
+  };
+  zahl(`${v.neu.length} neu`);
+  zahl(`${v.bleibt} unverändert`);
+  if (v.reaktiviert.length) zahl(`${v.reaktiviert.length} wieder aufgenommen`);
+  if (v.archiviert.length) zahl(`${v.archiviert.length} archiviert`, true);
+  if (v.fehler.length) zahl(`${v.fehler.length} nicht erkannt`, true);
+
+  const klassen = document.createElement('p');
+  klassen.className = 'liste-hinweis';
+  klassen.textContent = `Klassen im Import: ${v.jeKlasse.map(k => `${k.klasse} (${k.anzahl})`).join(', ')}`;
+
+  const name = e => `${e.klasse} · ${e.name}`;
+  vorschauInhalt.append(...[
+    zahlen,
+    klassen,
+    // Archivieren zuerst: eine unvollstaendige Liste archiviert den Rest der
+    // Klasse - das soll niemand uebersehen.
+    vorschauGruppe('Wird archiviert', v.archiviert.map(name), true),
+    vorschauGruppe('Nicht erkannt', v.fehler.map(f => `Zeile ${f.zeile}: ${f.text} – ${f.grund}`), true),
+    vorschauGruppe('Neu', v.neu.map(name)),
+    vorschauGruppe('Wieder aufgenommen', v.reaktiviert.map(name))
+  ].filter(Boolean));
+  vorschauKarte.classList.remove('hidden');
+}
+
+const LISTE_GRUND = {
+  keine_berechtigung: 'Die Schülerliste darf nur die Verwaltung ändern.',
+  leer: 'In der Liste wurde keine Zeile erkannt.'
+};
+
+btnVorschau.addEventListener('click', async () => {
+  btnVorschau.disabled = true;
+  try {
+    const antwort = await socket.timeout(10000).emitWithAck('schueler_vorschau', { text: listeEingabe.value });
+    if (antwort.ok) zeigeVorschau(antwort.vorschau);
+    else showToast(LISTE_GRUND[antwort.grund] || 'Vorschau nicht möglich.');
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  } finally {
+    btnVorschau.disabled = false;
+  }
+});
+
+btnUebernehmen.addEventListener('click', async () => {
+  btnUebernehmen.disabled = true;
+  try {
+    const antwort = await socket.timeout(10000).emitWithAck('schueler_uebernehmen', { text: listeEingabe.value });
+    if (antwort.ok) {
+      const e = antwort.ergebnis;
+      showToast(`Übernommen: ${e.neu} neu, ${e.archiviert} archiviert, ${e.bleibt + e.reaktiviert} bestätigt.`);
+      listeEingabe.value = '';
+      vorschauKarte.classList.add('hidden');
+    } else {
+      showToast(LISTE_GRUND[antwort.grund] || 'Übernehmen nicht möglich.');
+    }
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  } finally {
+    btnUebernehmen.disabled = false;
+  }
+});
+
+// Eine geaenderte Liste macht die Vorschau ungueltig - uebernommen wird nur,
+// was vorher zu sehen war.
+listeEingabe.addEventListener('input', () => vorschauKarte.classList.add('hidden'));
 
 // --- Overlay-Warteschlange ---
 // Frueher merkte sich der Client genau einen Vorfall. Kamen zwei Meldungen
@@ -455,6 +699,10 @@ socket.on('login_success', (antwort) => {
   displayRoom.textContent = `Raum ${user.room}`;
   uebernehmeStatus(user);
   zeigeSchule(user);
+  listenModus = Boolean(user.listenModus);
+  istVerwaltung = Boolean(user.verwaltung);
+  btnSchuelerliste.classList.toggle('hidden', !(listenModus && istVerwaltung));
+  zeichneAuswahl();
 
   // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
   // gerade arbeitet.
@@ -529,6 +777,7 @@ socket.on('help_requested', (response) => {
   if (response.success) {
     showToast(`Schüler auf dem Weg zu ${response.incident.receiverName}`);
     inputStudentName.value = '';
+    auswahlZuruecksetzen();
     switchView(dashboardView);
   } else {
     showToast(response.message || 'Fehler beim Senden.');
@@ -722,6 +971,19 @@ function renderTeachersList() {
     `;
 
     el.addEventListener('click', () => {
+      if (listenModus) {
+        // Ohne Wahl wird nicht geschickt: ein versehentlicher Tipp auf die
+        // Kollegin soll keine Auszeit ohne Namen ausloesen.
+        if (schuelerliste.length > 0 && !gewaehlt) {
+          showToast('Bitte zuerst den Schüler antippen – oder „Ohne Namen“.');
+          return;
+        }
+        socket.emit('request_help', {
+          receiverId: teacher.id,
+          ...(gewaehlt && gewaehlt !== 'ohne' ? { schuelerKennung: gewaehlt.kennung } : {})
+        });
+        return;
+      }
       socket.emit('request_help', {
         studentName: inputStudentName.value.trim(),
         receiverId: teacher.id
@@ -760,6 +1022,11 @@ btnLogin.addEventListener('click', anmelden);
 // Verwirft alles, was zur bisherigen Sitzung gehoert.
 function zuruecksetzen() {
   currentUser = null;
+  listenModus = false;
+  istVerwaltung = false;
+  schuelerliste = [];
+  gewaehlt = null;
+  btnSchuelerliste.classList.add('hidden');
   meineVorfaelle = [];
   meinePlaetze = 0;
   overlayQueue = [];
@@ -866,8 +1133,18 @@ raumEingabe.addEventListener("keydown", (e) => {
 
 // Emergency Navigation
 btnEmergency.addEventListener('click', () => {
+  auswahlZuruecksetzen();
   switchView(emergencyView);
   // Optional: Auto-focus Name input, but on mobile it brings up keyboard and hides list
+});
+
+btnSchuelerliste.addEventListener('click', () => {
+  zeichneListenStand();
+  switchView(schuelerView);
+});
+
+btnZurueckListe.addEventListener('click', () => {
+  switchView(dashboardView);
 });
 
 btnBackDashboard.addEventListener('click', () => {

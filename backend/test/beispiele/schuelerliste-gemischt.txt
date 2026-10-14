@@ -1,0 +1,34 @@
+7a; Müller, Anna
+7a;Schmidt, Ben
+7a	Klein	Lea
+7a	Wagner	Jonas
+7a Tim Becker
+7a Mia Sophie Hoffmann
+Schulz, Paul 7a
+Emma Koch 7a
+1. 7a Noah Richter
+2) 7a Lina Wolf
+- 7a Elias Schröder
+07A; Neumann, Lara
+7b; Schwarz, Leon
+7b; Zimmermann, Marie
+7b	Braun	Finn
+7b	Krüger	Clara
+7b Luis Hofmann
+7b Ida Hartmann
+Lange, Emil; 7b
+Schmitt, Frieda; 7b
+7b René Lefèvre
+7b; von der Heide, Maria
+8c; Werner, Jakob
+8c; Krause, Hanna
+8c	Meier	Theo
+8c Nele Lehmann
+8c Moritz Köhler
+Herrmann, Greta 8c
+J1; König, Felix
+j1 Ella Walter
+
+7a; Müller, Anna
+Anna ohne Klasse
+9d Einzelname
