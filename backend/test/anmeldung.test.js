@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { io: verbindeClient } = require('socket.io-client');
 const { starteTestserver } = require('./testserver');
+const { warteAuf } = require('./hilfen');
 
 let testserver;
 let adresse;
@@ -34,24 +35,6 @@ function tab() {
   });
   clients.push(client);
   return new Promise(resolve => client.once('connect', () => resolve(client)));
-}
-
-// Den Empfaenger immer vor dem Senden anlegen, sonst kann die Antwort schon
-// da sein, bevor jemand zuhoert.
-function warteAuf(client, ereignis, passt = () => true, ms = 2000) {
-  return new Promise((resolve, reject) => {
-    const zeit = setTimeout(() => {
-      client.off(ereignis, empfang);
-      reject(new Error(`"${ereignis}" ist nicht eingetroffen`));
-    }, ms);
-    function empfang(daten) {
-      if (!passt(daten)) return;
-      clearTimeout(zeit);
-      client.off(ereignis, empfang);
-      resolve(daten);
-    }
-    client.on(ereignis, empfang);
-  });
 }
 
 async function anmelden(client, felder) {

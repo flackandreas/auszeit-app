@@ -7,6 +7,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const path = require('path');
+const { liesKeks } = require('./kekse');
 
 const TOKEN_MINDESTLAENGE = 16;
 const SITZUNG_GUELTIG_MS = 8 * 60 * 60 * 1000;
@@ -48,15 +49,6 @@ function cookieGueltig(wert, token) {
   } catch (err) {
     return false;
   }
-}
-
-function cookieLesen(req, name) {
-  const roh = req.headers.cookie || '';
-  for (const teil of roh.split(';')) {
-    const [k, ...rest] = teil.trim().split('=');
-    if (k === name) return decodeURIComponent(rest.join('='));
-  }
-  return null;
 }
 
 /**
@@ -109,7 +101,7 @@ function erstelleAdmin(kontext) {
 
   // Ab hier ist alles geschuetzt.
   router.use('/api', (req, res, next) => {
-    if (cookieGueltig(cookieLesen(req, COOKIE), token)) return next();
+    if (cookieGueltig(liesKeks(req, COOKIE), token)) return next();
     res.status(401).json({ fehler: 'nicht_angemeldet' });
   });
 

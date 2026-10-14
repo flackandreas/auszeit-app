@@ -41,25 +41,34 @@
                Ein falscher Link faellt so sofort auf. -->
           <div id="schul-name" class="schul-name hidden"></div>
           <div id="schul-fehler" class="schul-fehler hidden"></div>
-          
-          <div class="input-group">
+
+          <!-- Anmeldung ueber das SchulOS-Portal. Erscheint nur, wenn Auszeit
+               am Portal haengt; der Code darunter bleibt dann der Rueckfall. -->
+          <a id="btn-portal" class="btn btn-primary hidden" href="/sso/start">Mit dem SchulOS-Portal anmelden</a>
+          <p id="portal-trenner" class="trenner hidden">oder mit dem Code der Schule</p>
+
+          <div class="input-group" id="name-gruppe">
             <label for="teacher-name">Dein Name / Kürzel</label>
             <input type="text" id="teacher-name" placeholder="z.B. Hr. Müller" required>
           </div>
           
-          <div class="input-group">
+          <div class="input-group" id="raum-gruppe">
             <label for="teacher-room">Aktueller Raum</label>
             <input type="text" id="teacher-room" placeholder="z.B. 104" required>
           </div>
 
-          <!-- Erscheint nur, wenn die Schule einen Beitrittscode verlangt, und
-               nur beim ersten Mal: danach liegt er im Browser. -->
+          <!-- Erscheint nur, wenn die Schule einen Beitrittscode verlangt. Er
+               bleibt nur bis zur Anmeldung in der Seite, nie im Browser. -->
           <div class="input-group hidden" id="pin-gruppe">
             <label for="schul-pin">Code der Schule</label>
             <input type="password" id="schul-pin" inputmode="numeric" autocomplete="off" maxlength="64" placeholder="vom Kollegium">
           </div>
           
           <button id="btn-login" class="btn btn-primary">Starten</button>
+
+          <!-- Abmelden nach einer Anmeldung ueber das Portal: ein echter POST,
+               damit der Browser danach zur Abmeldung beim Portal weitergeht. -->
+          <form id="abmelde-formular" method="post" action="/abmelden" hidden></form>
         </div>
       </section>
 

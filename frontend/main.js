@@ -18,6 +18,11 @@ const inputRoom = document.getElementById('teacher-room');
 const btnLogin = document.getElementById('btn-login');
 const pinGruppe = document.getElementById('pin-gruppe');
 const inputPin = document.getElementById('schul-pin');
+const nameGruppe = document.getElementById('name-gruppe');
+const raumGruppe = document.getElementById('raum-gruppe');
+const btnPortal = document.getElementById('btn-portal');
+const portalTrenner = document.getElementById('portal-trenner');
+const abmeldeFormular = document.getElementById('abmelde-formular');
 
 // Dashboard Elements
 const displayName = document.getElementById('display-name');
@@ -184,7 +189,11 @@ const ABWEISUNG = {
   pin_falsch: 'Der Code stimmt nicht. Bitte beim Kollegium nachfragen.',
   unbekannte_schule: 'Dieser Link gehört zu keiner eingerichteten Schule. Bitte den Link der eigenen Schule verwenden.',
   kennung_fremder_schule: 'Dieses Gerät ist bereits bei einer anderen Schule angemeldet.',
-  sitzung_ungueltig: 'Die Anmeldung ist abgelaufen. Bitte den Code der Schule erneut eingeben.'
+  sitzung_ungueltig: 'Die Anmeldung ist abgelaufen. Bitte den Code der Schule erneut eingeben.',
+  nur_portal: 'An dieser Schule läuft die Anmeldung über das SchulOS-Portal.',
+  portal_sitzung_fehlt: 'Die Anmeldung ist abgelaufen. Bitte erneut über das Portal anmelden.',
+  raum_fehlt: 'Bitte den aktuellen Raum eingeben.',
+  portal_schleife: 'Die Anmeldung über das Portal hat nicht geklappt. Bitte erneut versuchen.'
 };
 
 function zeigeSchule(daten) {
@@ -198,12 +207,60 @@ function zeigeSchule(daten) {
 
 let pinNoetig = false;
 
-// Sichtbar, sobald die Schule einen Code verlangt. Gebraucht wird er bei jeder
-// Neuanmeldung - nach dem Abmelden oder wenn die Sitzung abgelaufen ist. Wer
-// nach einem Verbindungsabbruch still wieder hineinkommt, sieht diese Maske
-// gar nicht.
-function zeigePinFeld() {
-  pinGruppe.classList.toggle('hidden', !pinNoetig);
+// --- Anmeldung ueber das SchulOS-Portal ---
+//
+// Haengt Auszeit am Portal, kommen Name und Kuerzel von dort, gefragt wird nur
+// noch der Raum. Wer die Lehrkraft ist, steht in einem Cookie, das dieses
+// Skript nie zu sehen bekommt (HttpOnly) - der Server liest es selbst.
+let portalAktiv = false;
+let nurPortal = false;
+let portalIch = null; // { name, kuerzel, raum } bei bestehender Portalsitzung
+
+async function portalSitzungLaden() {
+  portalIch = null;
+  if (!portalAktiv) return;
+  try {
+    const antwort = await fetch('/api/sitzung', { cache: 'no-store' });
+    if (antwort.ok) portalIch = await antwort.json();
+  } catch (err) {
+    console.warn('Portalsitzung nicht abrufbar:', err);
+  }
+}
+
+// Welche Teile der Anmeldemaske gebraucht werden. Das Codefeld ist sichtbar,
+// sobald die Schule einen Code verlangt; gebraucht wird er bei jeder
+// Neuanmeldung, nicht bei der stillen Wiederanmeldung nach einem Abbruch.
+function zeigeAnmeldeweg() {
+  const ueberPortal = Boolean(portalAktiv && portalIch);
+  const mitCode = !nurPortal && !ueberPortal;
+
+  btnPortal.classList.toggle('hidden', !portalAktiv || ueberPortal);
+  portalTrenner.classList.toggle('hidden', !(portalAktiv && mitCode));
+  nameGruppe.classList.toggle('hidden', !ueberPortal && !mitCode);
+  raumGruppe.classList.toggle('hidden', !ueberPortal && !mitCode);
+  btnLogin.classList.toggle('hidden', !ueberPortal && !mitCode);
+  pinGruppe.classList.toggle('hidden', !mitCode || !pinNoetig);
+
+  // Der Name kommt aus dem Portal und laesst sich hier nicht aendern.
+  inputName.readOnly = ueberPortal;
+  if (ueberPortal) inputName.value = portalIch.name;
+}
+
+// Mit PORTAL_NUR_SSO gibt es nur diesen einen Weg - also gleich dorthin. Kommt
+// der Browser binnen einer Minute ohne Sitzung zurueck, stimmt etwas nicht
+// (etwa ein Cookie, das nicht ankommt); dann bleibt die Seite stehen, statt
+// im Kreis zu laufen.
+const UMLEITUNG = 'auszeit_portal_umleitung';
+
+function zumPortal() {
+  let zuletzt = 0;
+  try { zuletzt = Number(sessionStorage.getItem(UMLEITUNG)) || 0; } catch (err) { /* ohne Speicher: einmal versuchen */ }
+  if (Date.now() - zuletzt < 60 * 1000) {
+    zeigeSchulfehler(ABWEISUNG.portal_schleife);
+    return;
+  }
+  try { sessionStorage.setItem(UMLEITUNG, String(Date.now())); } catch (err) { /* siehe oben */ }
+  location.assign('/sso/start');
 }
 
 function zeigeSchulfehler(text) {
@@ -226,7 +283,11 @@ async function schulePruefen() {
     const schule = await antwort.json();
     zeigeSchule({ schulName: schule.name, demo: schule.demo });
     pinNoetig = Boolean(schule.pinNoetig);
-    zeigePinFeld();
+    portalAktiv = Boolean(schule.portal);
+    nurPortal = Boolean(schule.nurPortal);
+    await portalSitzungLaden();
+    zeigeAnmeldeweg();
+    if (nurPortal && !portalIch) zumPortal();
     return schule;
   } catch (err) {
     // Ohne Antwort nicht blockieren - die Socket-Anmeldung entscheidet dann.
@@ -285,9 +346,18 @@ socket.on('connect', async () => {
   // ausgefuellt da, und es fehlt hoechstens der Code.
   const gespeichert = gespeicherteAngaben();
   if (gespeichert) {
-    inputName.value = gespeichert.name || '';
+    if (!inputName.readOnly) inputName.value = gespeichert.name || '';
     inputRoom.value = gespeichert.room || '';
   }
+
+  // Ueber das Portal: Wer die Lehrkraft ist, weiss der Server aus dem Cookie.
+  // Fehlt beim ersten Mal noch der Raum, bleibt es bei der Maske.
+  if (portalIch) {
+    const raum = inputRoom.value.trim() || portalIch.raum;
+    if (raum) socket.emit('login', { portal: true, schulId: SCHULCODE, room: raum });
+    return;
+  }
+  if (nurPortal) return;
 
   // Greift auch nach einem Reconnect: die Wiederanmeldung stellt die Zuordnung
   // Socket -> Lehrkraft wieder her, damit Meldungen ankommen. Den Raum schickt
@@ -310,6 +380,27 @@ socket.on('login_failed', (antwort) => {
   const grund = antwort && antwort.grund;
   // Ein abgewiesenes Token taugt nicht mehr, gleich aus welchem Grund.
   localStorage.removeItem(tokenSchluessel());
+
+  if (grund === 'portal_sitzung_fehlt') {
+    // Abgelaufen, im Portal abgemeldet oder der Server wurde neu gestartet.
+    portalIch = null;
+    zurAnmeldung();
+    if (nurPortal) {
+      zumPortal();
+    } else {
+      zeigeSchulfehler(ABWEISUNG.portal_sitzung_fehlt);
+      btnLogin.disabled = false;
+    }
+    return;
+  }
+
+  if (grund === 'raum_fehlt') {
+    zeigeSchulfehler(ABWEISUNG.raum_fehlt);
+    btnLogin.disabled = false;
+    switchView(loginView);
+    inputRoom.focus();
+    return;
+  }
 
   if (grund === 'sitzung_ungueltig') {
     // Abgelaufen, anderswo abgemeldet oder der Server wurde neu gestartet. Der
@@ -336,7 +427,7 @@ socket.on('login_failed', (antwort) => {
     // Feld wieder zeigen und erneut fragen.
     anmeldePin = '';
     pinNoetig = true;
-    zeigePinFeld();
+    zeigeAnmeldeweg();
     btnLogin.disabled = false;
     inputPin.value = '';
     inputPin.focus();
@@ -357,6 +448,7 @@ socket.on('login_success', (antwort) => {
   anmeldePin = '';
   inputPin.value = '';
   pinGruppe.classList.add('hidden');
+  try { sessionStorage.removeItem(UMLEITUNG); } catch (err) { /* nichts zu tun */ }
   currentUser = user;
   localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: user.name, room: user.room }));
   displayName.textContent = user.name;
@@ -372,8 +464,19 @@ socket.on('login_success', (antwort) => {
 // Ein anderer Tab dieser Sitzung hat sich abgemeldet - das Token ist damit
 // widerrufen. Dieser Tab darf nicht angemeldet weiterlaufen. Den Browser hat
 // der andere Tab schon aufgeraeumt.
-socket.on('logged_out', () => {
+socket.on('logged_out', async () => {
+  // Kam die Abmeldung aus dem Portal, hat in diesem Browser niemand
+  // aufgeraeumt. Der Name der Lehrkraft soll auf einem Raum-PC nicht fuer
+  // die naechste Person in der Maske stehen bleiben.
+  if (portalIch) {
+    localStorage.removeItem(sitzungsSchluessel());
+    inputName.value = '';
+  }
   zurAnmeldung();
+  // Bei einer Abmeldung im Portal ist auch das Cookie weg - die Maske zeigt
+  // dann wieder den Weg ueber das Portal.
+  await portalSitzungLaden();
+  zeigeAnmeldeweg();
 });
 
 // Der Server ist die Wahrheit ueber Aufnahmebereitschaft und Plaetze, nicht
@@ -636,6 +739,11 @@ function renderTeachersList() {
 function anmelden() {
   const name = inputName.value.trim();
   const room = inputRoom.value.trim();
+  if (portalIch) {
+    if (room) socket.emit('login', { portal: true, schulId: SCHULCODE, room });
+    else showToast('Bitte den Raum eingeben.');
+    return;
+  }
   if (name && room) {
     // Der Code wird gebraucht, bis die Anmeldung durch ist - auch ueber einen
     // Verbindungsabbruch hinweg. Danach vergisst ihn die Seite.
@@ -658,7 +766,7 @@ function zuruecksetzen() {
   notificationLayer.classList.add('hidden');
   statusToggle.checked = false;
   capBtns.forEach(b => b.classList.remove('selected'));
-  zeigePinFeld();
+  zeigeAnmeldeweg();
   zeichneStatus();
   renderVorfaelle();
 }
@@ -670,6 +778,14 @@ function zurAnmeldung() {
 
 // Logout
 btnLogout.addEventListener('click', () => {
+  // Ueber das Portal angemeldet: Der Server beendet die Sitzung und schickt
+  // den Browser weiter zum Portal, das dann auch alle anderen Module abmeldet.
+  // Dafuer braucht es eine echte Navigation, keine Socket-Nachricht.
+  if (portalIch) {
+    localStorage.removeItem(sitzungsSchluessel());
+    abmeldeFormular.submit();
+    return;
+  }
   // Das Token geht mit: Ist die Verbindung gerade weg, kommt die Abmeldung
   // erst nach dem Reconnect an, und erst das Token sagt dem Server, wessen
   // Sitzung er widerrufen soll.

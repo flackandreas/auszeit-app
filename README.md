@@ -7,6 +7,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 ## 🚀 Hauptfunktionen
 
 - **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an. Ein geheimes Sitzungstoken bringt sie nach Verbindungsabbrüchen still in ihre Sitzung zurück (siehe [Identität und Sitzung](#identität-und-sitzung)).
+- **Anmeldung über das SchulOS-Portal**: Hängt Auszeit am Portal, kommen Name und Kürzel von dort – ohne zweites Passwort. Gefragt wird nur noch der Raum (siehe [Anmeldung über das SchulOS-Portal](#anmeldung-über-das-schulos-portal)).
 - **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3+). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
@@ -62,6 +63,8 @@ auszeit-app/
 │   ├── package.json
 │   ├── server.js         # Express + Socket.IO Server & In-Memory Event-Logik
 │   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
+│   ├── portal.js         # Anmeldung über das SchulOS-Portal (OpenID Connect)
+│   ├── kekse.js          # Cookies lesen – für Routen und Socket-Handshake
 │   ├── speicher.js       # Ablage der Mandanten (daten/schulen.json)
 │   ├── admin.js          # Verwaltungsoberfläche für Mandanten
 │   └── test/             # Tests mit node:test
@@ -142,9 +145,9 @@ unberührt.
 
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
-| `login` | Client ➔ Server | Zwei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – oder **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`). Eine mitgeschickte Kennung wird nicht beachtet. |
+| `login` | Client ➔ Server | Drei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`) – oder **über das Portal** (`portal: true` und Raum); wer die Lehrkraft ist, hat dann schon der Handshake aus dem Cookie gelesen. Eine mitgeschickte Kennung wird nie beachtet. |
 | `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft, angebotene Plätze). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
-| `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule` oder `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt). |
+| `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule`, `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt), `nur_portal` (Anmeldung mit Code abgeschaltet), `portal_sitzung_fehlt` oder `raum_fehlt`. |
 | `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. |
 | `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
@@ -162,7 +165,7 @@ unberührt.
 | `return_requested` | Server ➔ Empfänger | Zeigt den Rückholwunsch an. |
 | `close_incident` | Client ➔ Server | Einseitiger Abschluss; nur zulässig, solange die Gegenseite offline ist. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
-| `logged_out` | Server ➔ übrige Tabs | Ein anderer Tab derselben Sitzung hat sich abgemeldet; dieser Tab kehrt zur Anmeldung zurück. |
+| `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. |
 | `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume und die Erreichbarkeit beider Seiten. |
 
 ### Zustandsautomat eines Vorfalls
@@ -356,12 +359,106 @@ Was das Portal von Auszeit erwartet:
   setzt sie selbst.
 
 Im Verbund gilt: ein Portal ist eine Schule. Ohne weitere Angabe läuft Auszeit
-dort mit dem Standardmandanten. Die Anmeldung über das Portal (OpenID Connect)
-folgt; bis dahin melden sich Lehrkräfte wie im Einzelbetrieb mit Name, Raum
-und gegebenenfalls Beitrittscode an.
+dort mit dem Standardmandanten, und die Lehrkräfte melden sich über das Portal
+an (nächster Abschnitt). Prüfen lässt sich das Zusammenspiel mit
+`pruefung/05-auszeit.sh` im Portal-Repository.
 
 Der **Einzelbetrieb bleibt unverändert**: `docker compose up` in diesem
 Repository startet Auszeit ohne Portal.
+
+### Anmeldung über das SchulOS-Portal
+
+Ein dauerhaftes Protokoll braucht echte Identitäten, ein frei eingetippter Name
+ist keine. Hängt Auszeit am Portal, meldet sich die Lehrkraft dort an – an der
+einzigen Stelle, an der sie ein Passwort eingibt – und kommt über die Kachel
+ohne weitere Eingabe in Auszeit. Name und Kürzel stammen aus dem Portal, den
+Raum gibt sie wie bisher selbst ein.
+
+**Ohne `PORTAL_ISSUER` bleibt alles wie bisher** (Beitrittscode).
+
+| Variable | Bedeutung |
+| :--- | :--- |
+| `PORTAL_ISSUER` | Öffentliche Adresse des Portals |
+| `PORTAL_CLIENT_ID` | `modul-auszeit` |
+| `PORTAL_CLIENT_SECRET` | Geheimnis zwischen Portal und Auszeit (`AUSZEIT_SECRET` im Verbund) |
+| `PORTAL_REDIRECT_URI` | `<öffentliche Adresse von Auszeit>/sso/rueckweg` |
+| `PORTAL_INTERN` | Adresse für Abrufe von Server zu Server, im Verbund `http://portal` |
+| `PORTAL_ADMIN_GRUPPEN` | Portalgruppen mit der Rolle „Verwaltung“ in Auszeit, Vorgabe `Schulleitung` |
+| `PORTAL_ZUGANG_GRUPPEN` | Leer: alle angemeldeten Personen. Sonst nur diese Gruppen (kommagetrennt). |
+| `PORTAL_NUR_SSO` | `1`: kein Codefeld, Anmeldungen mit Code lehnt der Server ab. |
+
+Die Namen sind dieselben wie bei den PHP-Modulen. Ist der Satz nur halb
+ausgefüllt, nennt das Log beim Start die fehlenden Angaben, und die Anmeldung
+über das Portal bleibt aus.
+
+| Route | |
+| :--- | :--- |
+| `GET /sso/start` | Anmeldung am Portal beginnen – das Ziel der Kachel |
+| `GET /sso/rueckweg` | Rückweg vom Portal: Code einlösen, Lehrkraft zuordnen, Sitzung beginnen |
+| `GET /sso/abmelden` | Abmeldung über den Vorderkanal (OpenID Connect Front-Channel Logout) |
+| `POST /abmelden` | Abmeldeknopf: Sitzung beenden, weiter zur Abmeldung beim Portal |
+| `GET /api/sitzung` | Name, Kürzel und Raum der angemeldeten Lehrkraft, sonst `401` |
+
+**Was geprüft wird.** Den Ablauf erledigt die Bibliothek `openid-client`, der
+Prüfumfang entspricht dem der PHP-Module (`schulos-sso`): PKCE mit S256,
+`state` und `nonce` auf dem Server, die Signatur über JWKS ausschließlich mit
+RS256 (`alg: none` und HMAC werden abgelehnt), dazu `iss`, `aud`, `exp` und
+`azp`. Eine Falle dabei: `openid-client` prüft die Signatur des ID-Tokens nur,
+wenn man es ausdrücklich verlangt (`enableNonRepudiationChecks`) – OIDC erlaubt
+den Verzicht, wenn das Token per TLS direkt vom Token-Endpunkt kommt. Im
+Verbund kommt es aber über `http://portal`, also ohne TLS. Ein Test hält fest,
+dass eine gefälschte Signatur abgelehnt wird.
+
+**`PORTAL_INTERN`.** Der Browser spricht die öffentliche Adresse des Portals,
+der Container erreicht es nur als `http://portal`. Entdeckung, Token und
+Schlüssel holt Auszeit deshalb intern; geprüft wird der Aussteller trotzdem
+gegen `PORTAL_ISSUER`. Umgeschrieben wird nur dieser bekannte Anfang.
+
+**Sitzung.** Nach dem Rückweg trägt ein Cookie `auszeit_sitzung` das
+Sitzungstoken (`HttpOnly`, `SameSite=Lax`, `Secure` sobald die Rückadresse
+https ist). Der Socket-Handshake liest das Cookie und bestimmt die Lehrkraft
+serverseitig; der Client schickt nur noch den Raum. Die Sitzung gilt
+`AUSZEIT_SITZUNG_TTL_MS` (Vorgabe 14 h), danach geht es über das Portal neu
+hinein – ohne Passwort, solange die Portalsitzung besteht. Die endet nach acht
+Stunden ohne Aktivität im Portal; in der Regel heißt das: morgens einmal das
+Passwort, dann den Tag über nicht mehr.
+
+**Eine Lehrkraft je Portalkonto.** Auszeit ordnet über `sub` zu, nicht über das
+Kürzel (das nach Jahren neu vergeben wird) und nicht über die Sitzung: Läuft
+die ab oder meldet sich die Lehrkraft zusätzlich am Tablet an, ist es dieselbe
+Lehrkraft mit denselben laufenden Auszeiten. Jedes Gerät hat aber seine eigene
+Sitzung.
+
+**Abmelden in beide Richtungen.** Der Abmeldeknopf in Auszeit beendet die
+Sitzung dieses Browsers und schickt ihn weiter zum Portal, das dann alle Module
+abmeldet. Umgekehrt lädt das Portal beim Abmelden `/sso/abmelden` in einem
+unsichtbaren Rahmen; Auszeit beendet daraufhin alle Sitzungen dieser
+Portalsitzung (`sid`) und meldet die offenen Tabs sofort ab. Der Aussteller muss
+stimmen, sonst passiert nichts. Andere Geräte derselben Lehrkraft bleiben
+angemeldet.
+
+**`PORTAL_NUR_SSO=1`** blendet das Codefeld aus; ohne Portalsitzung leitet
+Auszeit gleich zum Portal weiter. Der Server lehnt Anmeldungen mit Code ab –
+**bewusst auch dann, wenn die Portal-Anbindung unvollständig ist**. Die
+PHP-Module lassen in diesem Fall ihre eigene Anmeldung offen; im Verbund läuft
+Auszeit aber ohne Beitrittscode, und ein vergessenes Geheimnis in der `.env`
+öffnete sonst die Tür für jede und jeden. Lieber kommt dann niemand hinein, und
+das Log sagt warum.
+
+**Herkunft der Socket-Verbindung.** Seit der Handshake ein Cookie liest, prüft
+Auszeit beim Verbindungsaufbau die Herkunft (`Origin`): erlaubt sind die eigene
+Adresse und `AUSZEIT_ORIGIN`. CORS allein genügt dafür nicht – es regelt nur
+Abfragen per XHR, nicht den Aufbau einer WebSocket-Verbindung. Ohne die Prüfung
+könnte eine Seite unter derselben Domain, etwa ein anderes Modul mit einer
+Lücke, eine Verbindung im Namen der Lehrkraft aufbauen.
+
+**Hinter Caddy und Cloudflare.** Express vertraut Proxys aus dem eigenen Netz
+(`trust proxy`). Ob das Cookie `Secure` bekommt, leitet Auszeit aber aus
+`PORTAL_REDIRECT_URI` ab und nicht aus `X-Forwarded-Proto`: Caddy ersetzt
+diesen Kopf, solange es dem Tunnel davor nicht ausdrücklich vertraut.
+
+Die Rolle „Verwaltung“ (`PORTAL_ADMIN_GRUPPEN`) wird bei jeder Anmeldung aus
+dem Portal übernommen und für den Import der Schülerliste gebraucht.
 
 ---
 

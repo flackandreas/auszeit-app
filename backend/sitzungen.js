@@ -29,20 +29,24 @@ function hashe(token) {
  * @param optionen.jetzt      () => Millisekunden; fuer Tests austauschbar
  */
 function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
-  const eintraege = new Map(); // Token-Hash -> { teacherId, gueltigBis }
+  // Token-Hash -> { teacherId, gueltigBis, ...angaben }. Die Angaben haengen
+  // an der Sitzung, nicht an der Lehrkraft: bei der Anmeldung ueber das
+  // Portal etwa dessen Sitzungskennung (sid) und das ID-Token, mit dem sich
+  // genau dieser Browser wieder abmelden laesst.
+  const eintraege = new Map();
 
   // Fester Ablauf ab der Ausstellung statt eines gleitenden: auf einem Raum-PC,
   // an dem sich niemand abmeldet, soll die Sitzung auch dann enden, wenn der
   // Rechner den ganzen Tag laeuft und staendig neu verbindet.
-  function ausstellen(teacherId) {
+  function ausstellen(teacherId, angaben = {}) {
     const token = crypto.randomBytes(32).toString('base64url');
-    eintraege.set(hashe(token), { teacherId, gueltigBis: jetzt() + gueltigMs });
+    eintraege.set(hashe(token), { ...angaben, teacherId, gueltigBis: jetzt() + gueltigMs });
     return token;
   }
 
-  // Liefert die Kennung der Lehrkraft oder null. Ein abgelaufenes Token wird
-  // dabei gleich entfernt.
-  function pruefen(token) {
+  // Die gueltige Sitzung zum Token samt ihrem Schluessel, sonst null. Ein
+  // abgelaufenes Token wird dabei gleich entfernt.
+  function sitzung(token) {
     if (typeof token !== 'string' || !TOKEN_FORMAT.test(token)) return null;
     const schluessel = hashe(token);
     const eintrag = eintraege.get(schluessel);
@@ -51,10 +55,25 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
       eintraege.delete(schluessel);
       return null;
     }
-    return eintrag.teacherId;
+    return { ...eintrag, schluessel };
   }
 
-  // Beim Abmelden und wenn die Lehrkraft aus dem Speicher faellt.
+  // Liefert die Kennung der Lehrkraft oder null.
+  function pruefen(token) {
+    const gefunden = sitzung(token);
+    return gefunden ? gefunden.teacherId : null;
+  }
+
+  // Beendet genau eine Sitzung - die eines Browsers. Eine Lehrkraft, die
+  // zusaetzlich am Tablet angemeldet ist, bleibt dort angemeldet.
+  function widerrufen(schluessel) {
+    const eintrag = eintraege.get(schluessel);
+    if (!eintrag) return null;
+    eintraege.delete(schluessel);
+    return { ...eintrag, schluessel };
+  }
+
+  // Wenn die Lehrkraft aus dem Speicher faellt.
   function widerrufeFuer(teacherId) {
     let anzahl = 0;
     for (const [schluessel, eintrag] of eintraege) {
@@ -64,6 +83,16 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
       }
     }
     return anzahl;
+  }
+
+  // Schluessel aller Sitzungen, auf die die Bedingung zutrifft - etwa alle zu
+  // einer Portalsitzung, die gerade abgemeldet wird.
+  function schluesselWo(bedingung) {
+    const gefunden = [];
+    for (const [schluessel, eintrag] of eintraege) {
+      if (eintrag.gueltigBis > jetzt() && bedingung(eintrag)) gefunden.push(schluessel);
+    }
+    return gefunden;
   }
 
   // Abgelaufene Tokens, die niemand mehr vorzeigt, wuerden sonst liegenbleiben.
@@ -81,8 +110,11 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now }) {
 
   return {
     ausstellen,
+    sitzung,
     pruefen,
+    widerrufen,
     widerrufeFuer,
+    schluesselWo,
     aufraeumen,
     get anzahl() { return eintraege.size; }
   };
