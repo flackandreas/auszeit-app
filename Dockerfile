@@ -4,7 +4,10 @@
 # Express-Server mit ausgeliefert. Bewusst kein Vite-Dev-Server: der ist fuer
 # die Entwicklung gedacht und gehoert nicht hinter einen oeffentlichen Zugang.
 
-FROM node:20-alpine
+# Node 22 (LTS). Node 20 bekommt seit Ende April 2026 keine
+# Sicherheitsupdates mehr. Nur die Hauptversion steht fest: So bringt jeder
+# Neubau die Korrekturen innerhalb von 22 mit.
+FROM node:22-alpine
 
 WORKDIR /app
 
