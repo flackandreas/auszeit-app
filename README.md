@@ -210,7 +210,7 @@ Adresse, kein zusaetzliches Feld. Eingerichtet wird er ueber `AUSZEIT_SCHULEN`
 | :--- | :--- |
 | `AUSZEIT_SCHULEN` | Zulaessige Mandanten. Bewusst eine feste Liste: ein Tippfehler im Link soll eine klare Fehlermeldung geben und keinen stillen, leeren Mandanten. |
 | `AUSZEIT_STANDARD_SCHULE` | Mandant fuer Aufrufe ohne `/s/<code>`. Haelt bestehende Lesezeichen gueltig. |
-| `AUSZEIT_ORIGIN` | Erlaubte Herkunft fuer Socket-Verbindungen, kommagetrennt. Ohne Angabe nur die eigene - noetig nur beim getrennten Vite-Dev-Server. |
+| `AUSZEIT_ORIGIN` | Erlaubte Herkunft fuer Socket-Verbindungen, kommagetrennt. Ohne Angabe nur die eigene. Noetig beim getrennten Vite-Dev-Server; im SchulOS-Verbund die oeffentliche Modul-Adresse (siehe unten). |
 
 `demo: true` blendet beim Schuelernamen den Hinweis ein, im Testbetrieb keine
 echten Namen einzugeben.
@@ -332,6 +332,36 @@ Beitrittscode kannte, konnte so die Sitzung einer anderen Lehrkraft übernehmen.
 Die Tokens liegen derzeit im Arbeitsspeicher, wie alles andere auch: Nach einem
 Neustart des Servers melden sich alle Lehrkräfte neu an. Mit der dauerhaften
 Speicherung wandern sie in die Datenbank.
+
+### Betrieb im SchulOS-Verbund
+
+Auszeit läuft auch als Modul im Server-Verbund des SchulOS-Portals
+(`schulos-portal`, Profil `auszeit`). Der Verbund baut das Abbild aus diesem
+Repository; Caddy reicht den Hostnamen des Moduls an Port 4000 durch,
+WebSockets eingeschlossen.
+
+```bash
+cd ../schulos-portal
+docker compose --profile auszeit up -d --build
+```
+
+Was das Portal von Auszeit erwartet:
+
+- **`GET /healthz`** antwortet mit `200` und `{"status":"ok"}`. Daran
+  entscheidet das Portal, ob das Modul „erreichbar“ ist und die Kachel
+  erscheint. Der Endpunkt ist ohne Anmeldung erreichbar und verrät deshalb
+  weder Version noch Mandanten.
+- **`AUSZEIT_ORIGIN`** ist die öffentliche Adresse des Moduls, also dieselbe
+  wie `AUSZEIT_URL` in der `.env` des Verbunds. Die `compose.yml` des Portals
+  setzt sie selbst.
+
+Im Verbund gilt: ein Portal ist eine Schule. Ohne weitere Angabe läuft Auszeit
+dort mit dem Standardmandanten. Die Anmeldung über das Portal (OpenID Connect)
+folgt; bis dahin melden sich Lehrkräfte wie im Einzelbetrieb mit Name, Raum
+und gegebenenfalls Beitrittscode an.
+
+Der **Einzelbetrieb bleibt unverändert**: `docker compose up` in diesem
+Repository startet Auszeit ohne Portal.
 
 ---
 
