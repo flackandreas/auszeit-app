@@ -479,14 +479,14 @@ docker run --rm node:20-alpine npx -y web-push@3.6.7 generate-vapid-keys
 Der private Schlüssel bleibt auf dem Server. Wechselt er, müssen alle
 Lehrkräfte die Benachrichtigungen neu einschalten.
 
-**Push braucht HTTPS** – auf dem eigenen Rechner reicht `http://localhost`, an
-der Schule läuft es über den Tunnel.
+**Push braucht HTTPS** – auf dem eigenen Rechner reicht `http://localhost`. In
+der Schule kommt HTTPS von der IServ-Weiterleitung, auf dem Demo-Pi vom Tunnel.
 
 #### Abnahme auf echten Geräten
 
 Automatisch geprüft ist, wer wann welche Nachricht bekommt (`npm test`).
 Ob sie bei gesperrtem Bildschirm ankommt, lässt sich nur auf echten Geräten
-prüfen – über den Tunnel, weil Push HTTPS braucht:
+prüfen – über die öffentliche Adresse mit HTTPS, weil Push das braucht:
 
 1. **iPhone:** Auszeit in Safari öffnen, „Teilen“ → „Zum Home-Bildschirm“, die
    App vom Home-Bildschirm starten, anmelden, „Benachrichtigungen –
@@ -597,6 +597,22 @@ dort mit dem Standardmandanten, und die Lehrkräfte melden sich über das Portal
 an (nächster Abschnitt). Prüfen lässt sich das Zusammenspiel mit
 `pruefung/05-auszeit.sh` im Portal-Repository.
 
+**In der Schule** läuft der Verbund ohne Caddy: `pi/compose.pi.yml` im
+Portal-Repository bringt Portal und Auszeit (Profil `auszeit`, Port 8009) neben
+die Module, die dort schon in eigenen Stapeln laufen; die Datenbank
+`db_auszeit` liegt in deren MariaDB. Die Weiterleitung im IServ der Schule
+reicht den Hostnamen von Auszeit an diesen Port. Zwei Dinge sind dabei anders:
+
+- **WebSockets müssen durch die Weiterleitung.** Kommen sie nicht durch,
+  weicht Socket.IO auf regelmäßiges Nachfragen aus – Auszeit funktioniert, aber
+  träger. Der Prüfbefehl steht im Betriebshandbuch.
+- **Anmeldung nur über das Portal hat einen eigenen Schalter**,
+  `AUSZEIT_NUR_SSO`, und der ist von sich aus an. Die anderen Module behalten
+  dort mit `PORTAL_NUR_SSO=0` ihre eigene Anmeldung; Auszeit hat keine.
+
+Einrichtung, Sicherung und Störungen: Betriebshandbuch `deploy/MAC-MINI.md` im
+Portal-Repository.
+
 Der **Einzelbetrieb bleibt unverändert**: `docker compose up` in diesem
 Repository startet Auszeit ohne Portal.
 
@@ -686,10 +702,13 @@ Abfragen per XHR, nicht den Aufbau einer WebSocket-Verbindung. Ohne die Prüfung
 könnte eine Seite unter derselben Domain, etwa ein anderes Modul mit einer
 Lücke, eine Verbindung im Namen der Lehrkraft aufbauen.
 
-**Hinter Caddy und Cloudflare.** Express vertraut Proxys aus dem eigenen Netz
-(`trust proxy`). Ob das Cookie `Secure` bekommt, leitet Auszeit aber aus
-`PORTAL_REDIRECT_URI` ab und nicht aus `X-Forwarded-Proto`: Caddy ersetzt
-diesen Kopf, solange es dem Tunnel davor nicht ausdrücklich vertraut.
+**Hinter einer Weiterleitung.** Vor Auszeit steht immer ein Vermittler – Caddy
+im Verbund, die IServ-Weiterleitung in der Schule, ein Tunnel auf dem Demo-Pi.
+Express vertraut Proxys aus dem eigenen Netz (`trust proxy`). Ob das Cookie
+`Secure` bekommt, leitet Auszeit aber aus `PORTAL_REDIRECT_URI` ab und nicht
+aus `X-Forwarded-Proto`: Nicht jeder Vermittler reicht diesen Kopf zuverlässig
+weiter, und Caddy ersetzt ihn, solange es dem davor nicht ausdrücklich vertraut.
+Die Adresse des Anfragenden wertet Auszeit nirgends aus.
 
 Die Rolle „Verwaltung“ (`PORTAL_ADMIN_GRUPPEN`) wird bei jeder Anmeldung aus
 dem Portal übernommen und für den Import der Schülerliste gebraucht.
