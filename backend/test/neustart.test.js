@@ -61,9 +61,26 @@ async function bereit(client, plaetze) {
   await ok;
 }
 
+// Mit Portal-Anmeldung ist das Schulbetrieb: Schueler kommen aus der Liste.
+// Die fuegt eine Lehrkraft mit der Rolle Verwaltung ein.
+let liste = new Map();
+
+async function listeEinfuegen(text) {
+  const anmeldung = await ueberPortal(testserver.adresse, testportal,
+    { sub: 'sub-sl', sid: 'sid-sl', kuerzel: 'SL', name: 'Schulleitung', gruppen: ['Schulleitung'] });
+  const client = await tab(testserver.adresse, { sitzung: anmeldung.sitzung, sammlung: clients });
+  const da = warteAuf(client, 'login_success');
+  client.emit('login', { portal: true, schulId: '', room: 'SL' });
+  await da;
+  const neueListe = warteAuf(client, 'schuelerliste', l => l.length > 0);
+  const ergebnis = await client.emitWithAck('schueler_uebernehmen', { text });
+  assert.equal(ergebnis.ok, true);
+  liste = new Map((await neueListe).map(s => [`${s.vorname} ${s.nachname}`, s.kennung]));
+}
+
 async function schicke(sender, empfaengerId, studentName) {
   const ok = warteAuf(sender, 'help_requested');
-  sender.emit('request_help', { receiverId: empfaengerId, studentName });
+  sender.emit('request_help', { receiverId: empfaengerId, schuelerKennung: liste.get(studentName) });
   const ergebnis = await ok;
   assert.equal(ergebnis.success, true);
   return ergebnis.incident;
@@ -75,6 +92,7 @@ async function neustarten() {
 }
 
 test('Neustart waehrend einer laufenden Auszeit: Vorfall und Belegung sind danach unveraendert da', async () => {
+  await listeEinfuegen('7a; Muster, Max\n7b Lena Beispiel');
   const anna = await mitCode('Anna', '101');
   await bereit(anna.client, 2);
   const bernd = await mitCode('Bernd', '202');
@@ -92,7 +110,10 @@ test('Neustart waehrend einer laufenden Auszeit: Vorfall und Belegung sind danac
   assert.equal(annaWieder.daten.id, anna.daten.id);
   const stand = new Map(annaWieder.vorfaelle.map(v => [v.id, v]));
   assert.equal(stand.get(max.id).status, 'betreut');
+  // Der Name kommt nach dem Neustart aus der Liste - im Protokoll steht nur
+  // die Kennung.
   assert.equal(stand.get(max.id).studentName, 'Max Muster');
+  assert.equal(stand.get(max.id).klasse, '7a');
   assert.ok(stand.get(max.id).angekommenAm, 'Zeitpunkt der Ankunft fehlt');
   assert.equal(stand.get(lena.id).status, 'unterwegs');
 

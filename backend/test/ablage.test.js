@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const { umWarteschlange } = require('../ablage');
 const { erstelleFluechtigeAblage } = require('../ablage/fluechtig');
 const { erstelleMariadbAblage } = require('../ablage/mariadb');
-const { lehrkraftAusZeile, vorfallAusZeile } = require('../ablage/zeilen');
+const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile } = require('../ablage/zeilen');
 
 const STUNDE = 60 * 60 * 1000;
 
@@ -33,7 +33,7 @@ if (process.env.AUSZEIT_TEST_DB_HOST) {
       host: konfiguration.host, port: konfiguration.port, user: konfiguration.nutzer,
       password: konfiguration.passwort, database: konfiguration.datenbank
     });
-    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle');
+    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle, schueler');
     await db.end();
     return erstelleMariadbAblage(konfiguration, { versuche: 1 });
   }]);
@@ -165,13 +165,32 @@ for (const [art, erzeuge] of arten) {
       assert.deepEqual((await laden()).sitzungen, []);
     });
 
+    await t.test('Schuelerliste: speichern, archivieren, Schuljahreswechsel', async () => {
+      const anna = {
+        kennung: 's-anna', schulId: 'schule', schuljahr: 2026, klasse: '7a',
+        vorname: 'Anna', nachname: 'Müller', schluessel: '7a|anna mueller', archiviertAm: null
+      };
+      const alt = { ...anna, kennung: 's-alt', schuljahr: 2025, vorname: 'Ben', schluessel: '7a|ben mueller' };
+      ablage.schuelerSpeichern([anna, alt]);
+      // Archivieren aendert dieselbe Zeile.
+      ablage.schuelerSpeichern([{ ...anna, archiviertAm: new Date('2026-10-13T10:00:00.000Z') }]);
+      await ablage.leeren();
+      const geladen = (await laden()).schueler.map(schuelerAusZeile).sort((a, b) => a.kennung.localeCompare(b.kennung));
+      assert.deepEqual(geladen, [
+        alt,
+        { ...anna, archiviertAm: new Date('2026-10-13T10:00:00.000Z') }
+      ]);
+      assert.equal((await ablage.jahreswechsel(2026)).schueler, 1);
+      assert.deepEqual((await laden()).schueler.map(z => z.kennung), ['s-anna']);
+    });
+
     await t.test('Schuljahreswechsel loescht nur fruehere Schuljahre', async () => {
       ablage.vorfallSpeichern(vorfall('v-neues-jahr', { schuljahr: 2027 }));
       await ablage.leeren();
       const vorher = (await laden()).vorfaelle.filter(z => z.schuljahr === 2026).length;
-      assert.equal(await ablage.jahreswechsel(2027), vorher + 1, 'v-gestern zaehlt mit, auch wenn er nicht geladen wird');
+      assert.equal((await ablage.jahreswechsel(2027)).vorfaelle, vorher + 1, 'v-gestern zaehlt mit, auch wenn er nicht geladen wird');
       assert.deepEqual((await laden()).vorfaelle.map(z => z.id), ['v-neues-jahr']);
-      assert.equal(await ablage.jahreswechsel(2027), 0);
+      assert.equal((await ablage.jahreswechsel(2027)).vorfaelle, 0);
     });
 
     await t.test('Vorfaelle lassen sich loeschen (Demo)', async () => {

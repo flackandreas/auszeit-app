@@ -14,7 +14,7 @@
 const fs = require('fs');
 const { erstelleFluechtigeAblage } = require('./fluechtig');
 const { erstelleMariadbAblage } = require('./mariadb');
-const { lehrkraftZeile, vorfallZeile } = require('./zeilen');
+const { lehrkraftZeile, schuelerZeile, vorfallZeile } = require('./zeilen');
 
 function umWarteschlange(impl) {
   let kette = Promise.resolve();
@@ -70,6 +70,11 @@ function umWarteschlange(impl) {
       return einreihen('Aufraeumen der Sitzungen', () => impl.abgelaufeneSitzungenLoeschen(jetztMs));
     },
 
+    schuelerSpeichern(liste) {
+      const zeilen = liste.map(schuelerZeile);
+      return einreihen(`Schuelerliste (${zeilen.length} Eintraege)`, () => impl.schuelerSpeichern(zeilen));
+    },
+
     vorfallSpeichern(vorfall) {
       const zeile = vorfallZeile(vorfall);
       return einreihen(`Vorfall ${zeile.id}`, () => impl.vorfallSpeichern(zeile));
@@ -78,10 +83,10 @@ function umWarteschlange(impl) {
       return einreihen(`Loeschen des Vorfalls ${id}`, () => impl.vorfallLoeschen(id));
     },
 
-    // Liefert, wie viele Vorfaelle geloescht wurden - also nicht nur
-    // einreihen, sondern auf das Ergebnis warten.
+    // Liefert, wie viel geloescht wurde ({ vorfaelle, schueler }) - also
+    // nicht nur einreihen, sondern auf das Ergebnis warten.
     async jahreswechsel(schuljahr) {
-      let geloescht = 0;
+      let geloescht = { vorfaelle: 0, schueler: 0 };
       await einreihen('Schuljahreswechsel', async () => {
         geloescht = await impl.jahreswechsel(schuljahr);
       });

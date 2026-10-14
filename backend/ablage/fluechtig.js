@@ -17,6 +17,7 @@ function erstelleFluechtigeAblage() {
   const lehrkraefte = new Map();
   const sitzungen = new Map();
   const vorfaelle = new Map();
+  const schueler = new Map();
 
   return {
     art: 'fluechtig',
@@ -36,6 +37,10 @@ function erstelleFluechtigeAblage() {
       for (const [schluessel, s] of sitzungen) if (s.gueltig_bis <= jetztMs) sitzungen.delete(schluessel);
     },
 
+    async schuelerSpeichern(zeilen) {
+      for (const zeile of zeilen) schueler.set(zeile.kennung, kopie(zeile));
+    },
+
     async vorfallSpeichern(zeile) { vorfaelle.set(zeile.id, kopie(zeile)); },
     async vorfallLoeschen(id) { vorfaelle.delete(id); },
 
@@ -50,16 +55,23 @@ function erstelleFluechtigeAblage() {
       return {
         lehrkraefte: [...lehrkraefte.values()].filter(l => l.sub || gebraucht.has(l.kennung)).map(kopie),
         sitzungen: gueltig.map(kopie),
-        vorfaelle: geladen.map(kopie)
+        vorfaelle: geladen.map(kopie),
+        schueler: [...schueler.values()].map(kopie)
       };
     },
 
     async jahreswechsel(schuljahr) {
-      let geloescht = 0;
+      const geloescht = { vorfaelle: 0, schueler: 0 };
       for (const [id, v] of vorfaelle) {
         if (v.schuljahr < schuljahr) {
           vorfaelle.delete(id);
-          geloescht += 1;
+          geloescht.vorfaelle += 1;
+        }
+      }
+      for (const [kennung, s] of schueler) {
+        if (s.schuljahr < schuljahr) {
+          schueler.delete(kennung);
+          geloescht.schueler += 1;
         }
       }
       return geloescht;
@@ -85,7 +97,8 @@ function erstelleFluechtigeAblage() {
       return {
         lehrkraefte: [...lehrkraefte.values()].map(kopie),
         sitzungen: [...sitzungen.values()].map(kopie),
-        vorfaelle: [...vorfaelle.values()].map(kopie)
+        vorfaelle: [...vorfaelle.values()].map(kopie),
+        schueler: [...schueler.values()].map(kopie)
       };
     }
   };

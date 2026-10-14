@@ -18,6 +18,7 @@ const VORFALL_SPALTEN = [
   'zurueckgeschickt_am', 'zurueck_am', 'beendet_am', 'abschluss', 'beendet_von'
 ];
 const LEHRKRAFT_SPALTEN = ['kennung', 'schul_id', 'sub', 'name', 'kuerzel', 'raum', 'verwaltung'];
+const SCHUELER_SPALTEN = ['kennung', 'schul_id', 'schuljahr', 'klasse', 'vorname', 'nachname', 'schluessel', 'archiviert_am'];
 
 // INSERT ... ON DUPLICATE KEY UPDATE fuer alle Spalten ausser dem Schluessel.
 // Der Server schreibt bei jedem Zustandswechsel die ganze Zeile.
@@ -29,6 +30,7 @@ function einfuegenOderAendern(tabelle, spalten) {
 
 const VORFALL_SPEICHERN = einfuegenOderAendern('vorfaelle', VORFALL_SPALTEN);
 const LEHRKRAFT_SPEICHERN = einfuegenOderAendern('lehrkraefte', LEHRKRAFT_SPALTEN);
+const SCHUELER_SPEICHERN = einfuegenOderAendern('schueler', SCHUELER_SPALTEN);
 
 function warte(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -132,6 +134,22 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
       await pool.execute('DELETE FROM sitzungen WHERE gueltig_bis <= ?', [jetztMs]);
     },
 
+    // Ein Import ist eine Einheit: entweder steht die ganze Liste oder keine
+    // Zeile davon.
+    async schuelerSpeichern(zeilen) {
+      const db = await pool.getConnection();
+      try {
+        await db.beginTransaction();
+        for (const z of zeilen) await db.execute(SCHUELER_SPEICHERN, SCHUELER_SPALTEN.map(s => z[s]));
+        await db.commit();
+      } catch (err) {
+        await db.rollback();
+        throw err;
+      } finally {
+        db.release();
+      }
+    },
+
     async vorfallSpeichern(z) {
       await pool.execute(VORFALL_SPEICHERN, VORFALL_SPALTEN.map(s => z[s]));
     },
@@ -151,8 +169,10 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
              OR EXISTS (SELECT 1 FROM sitzungen s WHERE s.kennung = l.kennung AND s.gueltig_bis > ?)
              OR l.kennung IN (?)`,
         [jetztMs, ['', ...vorfaelle.flatMap(v => [v.sender_kennung, v.empfaenger_kennung])]]);
+      const [schueler] = await pool.query('SELECT * FROM schueler');
       return {
         lehrkraefte,
+        schueler,
         sitzungen: sitzungen.map(s => ({
           ...s,
           gueltig_bis: Number(s.gueltig_bis),
@@ -163,8 +183,9 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
     },
 
     async jahreswechsel(schuljahr) {
-      const [ergebnis] = await pool.execute('DELETE FROM vorfaelle WHERE schuljahr < ?', [schuljahr]);
-      return ergebnis.affectedRows;
+      const [vorfaelle] = await pool.execute('DELETE FROM vorfaelle WHERE schuljahr < ?', [schuljahr]);
+      const [schueler] = await pool.execute('DELETE FROM schueler WHERE schuljahr < ?', [schuljahr]);
+      return { vorfaelle: vorfaelle.affectedRows, schueler: schueler.affectedRows };
     },
 
     // Lehrkraefte aus Anmeldungen mit Code haben keine dauerhafte Identitaet.
