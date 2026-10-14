@@ -91,7 +91,7 @@ auszeit-app/
 ## 💻 Installation & Start
 
 ### Voraussetzungen
-- **Node.js 22** – dieselbe Version wie im Dockerfile. Vite 8 verlangt
+- **Node.js 24** – dieselbe Version wie im Dockerfile. Vite 8 verlangt
   mindestens 20.19 bzw. 22.12; Node 20 bekommt keine Sicherheitsupdates mehr.
 - **npm** (wird mit Node.js installiert)
 
@@ -136,7 +136,7 @@ chmod +x start.sh
 ### 3. Tests
 
 Jeder Pull Request wird auf GitHub geprüft (`.github/workflows/pruefung.yml`):
-dieselben Tests mit Node 22 und dazu der Bau des Frontends. Das Ergebnis steht
+dieselben Tests mit Node 24 und dazu der Bau des Frontends. Das Ergebnis steht
 als Haken oder Kreuz im Pull Request.
 
 Aus dem Verzeichnis `backend`:
@@ -474,7 +474,7 @@ der Server riefe sie auf.
 Schlüssel einmalig erzeugen und beide Werte in die `.env` eintragen:
 
 ```bash
-docker run --rm node:22-alpine npx -y web-push@3.6.7 generate-vapid-keys
+docker run --rm node:24-alpine npx -y web-push@3.6.7 generate-vapid-keys
 ```
 
 Der private Schlüssel bleibt auf dem Server. Wechselt er, müssen alle
