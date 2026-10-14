@@ -60,6 +60,12 @@ const vorschauKarte = document.getElementById('vorschau');
 const vorschauInhalt = document.getElementById('vorschau-inhalt');
 const btnUebernehmen = document.getElementById('btn-uebernehmen');
 
+// Benachrichtigungen
+const pushKarte = document.getElementById('push-karte');
+const pushStatus = document.getElementById('push-status');
+const btnPush = document.getElementById('btn-push');
+const pushHinweis = document.getElementById('push-hinweis');
+
 // Mandanten-Anzeige
 const schulName = document.getElementById('schul-name');
 const schulFehler = document.getElementById('schul-fehler');
@@ -303,6 +309,7 @@ async function schulePruefen() {
     pinNoetig = Boolean(schule.pinNoetig);
     portalAktiv = Boolean(schule.portal);
     nurPortal = Boolean(schule.nurPortal);
+    pushSchluessel = schule.pushSchluessel || null;
     await portalSitzungLaden();
     zeigeAnmeldeweg();
     if (nurPortal && !portalIch) zumPortal();
@@ -503,6 +510,134 @@ function zeigeVorschau(v) {
   vorschauKarte.classList.remove('hidden');
 }
 
+// --- Benachrichtigungen ---
+//
+// Ohne sie kommt der Alarm nur, solange Auszeit offen ist. Eingeschaltet wird
+// nur auf einen Tipp hin: iOS verlangt dafuer eine Handlung der Person, und
+// eine Frage beim Laden der Seite wird ohnehin reflexhaft weggeklickt.
+let pushSchluessel = null;
+
+const istIos = /iPad|iPhone|iPod/.test(navigator.userAgent)
+  || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const alsApp = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const pushMoeglich = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(err => console.warn('Service Worker nicht registriert:', err));
+}
+
+function schluesselAlsBytes(base64) {
+  const auffuellung = '='.repeat((4 - (base64.length % 4)) % 4);
+  const roh = atob((base64 + auffuellung).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(roh, z => z.charCodeAt(0));
+}
+
+function zeigePush(status, { an = false, knopf = null, hinweis = '' } = {}) {
+  pushKarte.classList.remove('hidden');
+  pushStatus.textContent = status;
+  pushStatus.classList.toggle('an', an);
+  btnPush.classList.toggle('hidden', !knopf);
+  if (knopf) btnPush.textContent = knopf;
+  pushHinweis.textContent = hinweis;
+  pushHinweis.classList.toggle('hidden', !hinweis);
+}
+
+async function aktuellesAbo() {
+  const registrierung = await navigator.serviceWorker.ready;
+  return registrierung.pushManager.getSubscription();
+}
+
+// Stand anzeigen - und ein vorhandenes Abo an die aktuelle Sitzung haengen.
+// Nach jeder Anmeldung noetig: Das Abo endet mit der Sitzung.
+async function pushStand() {
+  if (!pushSchluessel || !currentUser) {
+    pushKarte.classList.add('hidden');
+    return;
+  }
+  if (!pushMoeglich) {
+    // iPhone und iPad koennen Benachrichtigungen nur fuer Apps auf dem
+    // Home-Bildschirm (ab iOS 16.4) - im Safari-Tab gibt es kein PushManager.
+    if (istIos && !alsApp) {
+      zeigePush('Benachrichtigungen nur als App', {
+        hinweis: 'Auf iPhone und iPad gibt es Benachrichtigungen nur, wenn Auszeit auf dem Home-Bildschirm liegt: in Safari „Teilen“ → „Zum Home-Bildschirm“, dann Auszeit von dort öffnen und hier einschalten.'
+      });
+    } else {
+      zeigePush('Dieser Browser kann keine Benachrichtigungen', {
+        hinweis: 'Der Alarm kommt nur, solange Auszeit offen ist.'
+      });
+    }
+    return;
+  }
+  if (Notification.permission === 'denied') {
+    zeigePush('Benachrichtigungen blockiert', {
+      hinweis: 'In den Einstellungen dieser Website erlauben – sonst kommt der Alarm nur bei offener App.'
+    });
+    return;
+  }
+  try {
+    const abo = await aktuellesAbo();
+    if (abo && Notification.permission === 'granted') {
+      const antwort = await socket.timeout(5000).emitWithAck('push_abo', abo.toJSON());
+      if (antwort.ok) {
+        zeigePush('Benachrichtigungen an – auch bei gesperrtem Bildschirm', { an: true, knopf: 'Aus' });
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Abo nicht abgleichbar:', err);
+  }
+  zeigePush('Benachrichtigungen aus', {
+    knopf: 'Einschalten',
+    hinweis: 'Ohne sie kommt der Alarm nur, solange Auszeit offen ist.'
+  });
+}
+
+btnPush.addEventListener('click', async () => {
+  btnPush.disabled = true;
+  try {
+    const vorhanden = await aktuellesAbo();
+    if (vorhanden && Notification.permission === 'granted' && btnPush.textContent === 'Aus') {
+      await socket.timeout(5000).emitWithAck('push_abmelden', { endpoint: vorhanden.endpoint });
+      await vorhanden.unsubscribe();
+    } else {
+      const erlaubnis = await Notification.requestPermission();
+      if (erlaubnis === 'granted') {
+        const registrierung = await navigator.serviceWorker.ready;
+        await registrierung.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: schluesselAlsBytes(pushSchluessel)
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Benachrichtigungen nicht umschaltbar:', err);
+    showToast('Benachrichtigungen ließen sich nicht einschalten.');
+  } finally {
+    btnPush.disabled = false;
+    pushStand();
+  }
+});
+
+// Beim Abmelden endet das Abo auch im Browser. Sonst bekaeme auf einem
+// Raum-PC die naechste Person nach ihrer Anmeldung Benachrichtigungen, um
+// die sie nie gebeten hat.
+async function pushAufGeraetBeenden() {
+  if (!pushMoeglich) return;
+  try {
+    const abo = await aktuellesAbo();
+    if (abo) await abo.unsubscribe();
+  } catch (err) {
+    console.warn('Abo nicht beendet:', err);
+  }
+}
+
+// Ist die App im Vordergrund? Dann reicht das Overlay, und der Server spart
+// sich die Benachrichtigung.
+function meldeSichtbarkeit() {
+  if (currentUser) socket.emit('sichtbarkeit', { sichtbar: document.visibilityState === 'visible' });
+}
+document.addEventListener('visibilitychange', meldeSichtbarkeit);
+
 const LISTE_GRUND = {
   keine_berechtigung: 'Die Schülerliste darf nur die Verwaltung ändern.',
   leer: 'In der Liste wurde keine Zeile erkannt.'
@@ -572,7 +707,10 @@ function naechstesOverlay() {
 
 btnNotificationAction.addEventListener('click', () => {
   const eintrag = overlayQueue.shift();
-  if (eintrag) socket.emit(eintrag.event, { incidentId: eintrag.incidentId });
+  if (eintrag) {
+    bestaetigt.add(eintrag.incidentId);
+    socket.emit(eintrag.event, { incidentId: eintrag.incidentId });
+  }
   naechstesOverlay();
 });
 
@@ -703,6 +841,8 @@ socket.on('login_success', (antwort) => {
   istVerwaltung = Boolean(user.verwaltung);
   btnSchuelerliste.classList.toggle('hidden', !(listenModus && istVerwaltung));
   zeichneAuswahl();
+  meldeSichtbarkeit();
+  pushStand();
 
   // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
   // gerade arbeitet.
@@ -713,6 +853,7 @@ socket.on('login_success', (antwort) => {
 // widerrufen. Dieser Tab darf nicht angemeldet weiterlaufen. Den Browser hat
 // der andere Tab schon aufgeraeumt.
 socket.on('logged_out', async () => {
+  pushAufGeraetBeenden();
   // Kam die Abmeldung aus dem Portal, hat in diesem Browser niemand
   // aufgeraeumt. Der Name der Lehrkraft soll auf einem Raum-PC nicht fuer
   // die naechste Person in der Maske stehen bleiben.
@@ -749,7 +890,10 @@ socket.on('available_teachers', (teachers) => {
   renderTeachersList();
 });
 
-socket.on('incoming_student', (incident) => {
+// Die Meldungen, auf die jemand reagieren muss. Sie kommen live - oder, wenn
+// die App bei der Meldung nicht offen war und erst ueber die Benachrichtigung
+// geoeffnet wird, beim Abgleich danach (siehe sync_incidents).
+function meldeAnkunft(incident) {
   zeigeOverlay({
     titel: 'Schüler auf dem Weg!',
     text: `<strong>${escapeHtml(incident.senderName)}</strong> schickt `
@@ -759,9 +903,9 @@ socket.on('incoming_student', (incident) => {
     incidentId: incident.id,
     vibration: [200, 100, 200, 100, 500]
   });
-});
+}
 
-socket.on('student_returning', (incident) => {
+function meldeRueckkehr(incident) {
   zeigeOverlay({
     titel: 'Schüler kommt zurück',
     text: `<strong>${escapeHtml(incident.receiverName)}</strong> schickt `
@@ -771,7 +915,27 @@ socket.on('student_returning', (incident) => {
     incidentId: incident.id,
     vibration: [200, 100, 200]
   });
-});
+}
+
+socket.on('incoming_student', meldeAnkunft);
+socket.on('student_returning', meldeRueckkehr);
+
+// Schon bestaetigt, aber vom Server noch nicht zurueckgemeldet: nicht erneut
+// als offene Meldung zeigen.
+const bestaetigt = new Set();
+
+// Was beim Abgleich noch auf eine Reaktion wartet. Ohne das stuende die
+// Lehrkraft, die ueber die Benachrichtigung in die App kommt, vor einer Karte
+// ohne Schaltflaeche - die Ankunft liess sich bisher nur im Overlay
+// bestaetigen, und das kam nur live.
+function holeOffeneMeldungenNach() {
+  if (!currentUser) return;
+  for (const inc of meineVorfaelle) {
+    if (bestaetigt.has(inc.id)) continue;
+    if (inc.receiverId === currentUser.id && inc.status === 'unterwegs') meldeAnkunft(inc);
+    if (inc.senderId === currentUser.id && inc.status === 'auf_dem_rueckweg') meldeRueckkehr(inc);
+  }
+}
 
 socket.on('help_requested', (response) => {
   if (response.success) {
@@ -813,6 +977,7 @@ socket.on('sync_incidents', (incidents) => {
   renderVorfaelle();
   zeichneStatus();
   raeumeOverlayAuf();
+  holeOffeneMeldungenNach();
 });
 
 // Ein Vorfall kann von der anderen Seite weitergedreht worden sein, waehrend
@@ -1027,6 +1192,7 @@ function zuruecksetzen() {
   schuelerliste = [];
   gewaehlt = null;
   btnSchuelerliste.classList.add('hidden');
+  pushKarte.classList.add('hidden');
   meineVorfaelle = [];
   meinePlaetze = 0;
   overlayQueue = [];
@@ -1050,9 +1216,10 @@ btnLogout.addEventListener('click', () => {
   // Dafuer braucht es eine echte Navigation, keine Socket-Nachricht.
   if (portalIch) {
     localStorage.removeItem(sitzungsSchluessel());
-    abmeldeFormular.submit();
+    pushAufGeraetBeenden().finally(() => abmeldeFormular.submit());
     return;
   }
+  pushAufGeraetBeenden();
   // Das Token geht mit: Ist die Verbindung gerade weg, kommt die Abmeldung
   // erst nach dem Reconnect an, und erst das Token sagt dem Server, wessen
   // Sitzung er widerrufen soll.

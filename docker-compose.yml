@@ -22,6 +22,11 @@ services:
       # Beginn des neuen Schuljahres, MM-TT. Dann wird das Protokoll des
       # alten geloescht.
       AUSZEIT_SCHULJAHR_STICHTAG: ${AUSZEIT_SCHULJAHR_STICHTAG:-08-01}
+      # Benachrichtigungen (Web Push). Ohne Schluessel kommt der Alarm nur bei
+      # offener App. Erzeugen: siehe README, Abschnitt "Benachrichtigungen".
+      AUSZEIT_VAPID_PUBLIC: ${AUSZEIT_VAPID_PUBLIC:-}
+      AUSZEIT_VAPID_PRIVATE: ${AUSZEIT_VAPID_PRIVATE:-}
+      AUSZEIT_VAPID_SUBJECT: ${AUSZEIT_VAPID_SUBJECT:-}
       # Verwaltung. Ohne Token bleibt sie abgeschaltet. Mit AUSZEIT_ADMIN_PORT
       # laeuft sie auf einem eigenen, nicht veroeffentlichten Port.
       AUSZEIT_ADMIN_TOKEN: ${AUSZEIT_ADMIN_TOKEN:-}

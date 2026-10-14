@@ -33,7 +33,7 @@ if (process.env.AUSZEIT_TEST_DB_HOST) {
       host: konfiguration.host, port: konfiguration.port, user: konfiguration.nutzer,
       password: konfiguration.passwort, database: konfiguration.datenbank
     });
-    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle, schueler');
+    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle, schueler, push_abos');
     await db.end();
     return erstelleMariadbAblage(konfiguration, { versuche: 1 });
   }]);
@@ -163,6 +163,31 @@ for (const [art, erzeuge] of arten) {
       ablage.abgelaufeneSitzungenLoeschen(jetzt);
       await ablage.leeren();
       assert.deepEqual((await laden()).sitzungen, []);
+    });
+
+    await t.test('Push-Abos haengen an der Sitzung und enden mit ihr', async () => {
+      const abo = (schluessel, sitzung, kennung) => ({
+        schluessel, sitzung, kennung, endpunkt: `https://fcm.googleapis.com/fcm/send/${schluessel}`,
+        p256dh: `B${'A'.repeat(86)}`, auth: 'abcdefghijklmnopqrstuv'
+      });
+      ablage.sitzungSpeichern('e'.repeat(64), { teacherId: 'push-1', gueltigBis: jetzt + STUNDE });
+      ablage.sitzungSpeichern('f'.repeat(64), { teacherId: 'push-2', gueltigBis: jetzt + STUNDE });
+      ablage.pushAboSpeichern(abo('1'.repeat(64), 'e'.repeat(64), 'push-1'));
+      ablage.pushAboSpeichern(abo('2'.repeat(64), 'f'.repeat(64), 'push-2'));
+      // Dasselbe Geraet nach neuer Anmeldung: umgehaengt, nicht verdoppelt.
+      ablage.pushAboSpeichern(abo('2'.repeat(64), 'e'.repeat(64), 'push-1'));
+      await ablage.leeren();
+      let geladen = (await laden()).pushAbos.map(a => `${a.schluessel[0]}:${a.kennung}`).sort();
+      assert.deepEqual(geladen, ['1:push-1', '2:push-1']);
+
+      ablage.sitzungLoeschen('e'.repeat(64));
+      await ablage.leeren();
+      assert.deepEqual((await laden()).pushAbos, []);
+
+      ablage.pushAboSpeichern(abo('3'.repeat(64), 'f'.repeat(64), 'push-2'));
+      ablage.sitzungenLoeschenFuer('push-2');
+      await ablage.leeren();
+      assert.deepEqual((await laden()).pushAbos, []);
     });
 
     await t.test('Schuelerliste: speichern, archivieren, Schuljahreswechsel', async () => {

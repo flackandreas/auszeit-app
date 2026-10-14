@@ -18,6 +18,7 @@ function erstelleFluechtigeAblage() {
   const sitzungen = new Map();
   const vorfaelle = new Map();
   const schueler = new Map();
+  const pushAbos = new Map();
 
   return {
     art: 'fluechtig',
@@ -29,13 +30,22 @@ function erstelleFluechtigeAblage() {
     async lehrkraftLoeschen(kennung) { lehrkraefte.delete(kennung); },
 
     async sitzungSpeichern(zeile) { sitzungen.set(zeile.schluessel, kopie(zeile)); },
-    async sitzungLoeschen(schluessel) { sitzungen.delete(schluessel); },
+    // Mit einer Sitzung enden ihre Push-Abos.
+    async sitzungLoeschen(schluessel) {
+      sitzungen.delete(schluessel);
+      for (const [k, a] of pushAbos) if (a.sitzung === schluessel) pushAbos.delete(k);
+    },
     async sitzungenLoeschenFuer(kennung) {
       for (const [schluessel, s] of sitzungen) if (s.kennung === kennung) sitzungen.delete(schluessel);
+      for (const [k, a] of pushAbos) if (a.kennung === kennung) pushAbos.delete(k);
     },
     async abgelaufeneSitzungenLoeschen(jetztMs) {
       for (const [schluessel, s] of sitzungen) if (s.gueltig_bis <= jetztMs) sitzungen.delete(schluessel);
+      for (const [k, a] of pushAbos) if (!sitzungen.has(a.sitzung)) pushAbos.delete(k);
     },
+
+    async pushAboSpeichern(zeile) { pushAbos.set(zeile.schluessel, kopie(zeile)); },
+    async pushAboLoeschen(schluessel) { pushAbos.delete(schluessel); },
 
     async schuelerSpeichern(zeilen) {
       for (const zeile of zeilen) schueler.set(zeile.kennung, kopie(zeile));
@@ -56,7 +66,8 @@ function erstelleFluechtigeAblage() {
         lehrkraefte: [...lehrkraefte.values()].filter(l => l.sub || gebraucht.has(l.kennung)).map(kopie),
         sitzungen: gueltig.map(kopie),
         vorfaelle: geladen.map(kopie),
-        schueler: [...schueler.values()].map(kopie)
+        schueler: [...schueler.values()].map(kopie),
+        pushAbos: [...pushAbos.values()].filter(a => gueltig.some(s => s.schluessel === a.sitzung)).map(kopie)
       };
     },
 
@@ -98,7 +109,8 @@ function erstelleFluechtigeAblage() {
         lehrkraefte: [...lehrkraefte.values()].map(kopie),
         sitzungen: [...sitzungen.values()].map(kopie),
         vorfaelle: [...vorfaelle.values()].map(kopie),
-        schueler: [...schueler.values()].map(kopie)
+        schueler: [...schueler.values()].map(kopie),
+        pushAbos: [...pushAbos.values()].map(kopie)
       };
     }
   };

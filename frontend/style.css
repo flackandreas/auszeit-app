@@ -798,3 +798,12 @@ a.btn { text-decoration: none; }
 .vorschau-gruppe.warnung h4 { color: var(--danger-hover); }
 
 #schueler-view .emergency-content { gap: 1rem; }
+
+/* --- Benachrichtigungen --- */
+.push-karte { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 1rem; padding: 1rem 1.25rem; }
+.push-karte.hidden { display: none; }
+.push-zeile { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
+.push-status { font-size: 0.9rem; font-weight: 600; }
+.push-status.an { color: #047857; }
+.push-karte .btn-klein { width: auto; flex: 0 0 auto; }
+.btn-klein.hidden { display: none; }
