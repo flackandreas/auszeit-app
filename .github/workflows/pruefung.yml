@@ -1,0 +1,85 @@
+# Prueft jeden Pull Request, egal auf welchen Branch er zielt - die Schritte
+# des Pilots liegen als Stapel aufeinander, nicht alle zielen auf main.
+#
+# Die Bausteine von GitHub sind auf einen Commit festgelegt statt auf einen
+# Versionsnamen: ein Name laesst sich nachtraeglich auf anderen Code umbiegen,
+# ein Commit nicht.
+name: Pruefung
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Nur lesen. Die Pruefung braucht keine Schreibrechte am Repo.
+permissions:
+  contents: read
+
+# Ein neuer Push macht den laufenden Durchgang fuer denselben Branch hinfaellig.
+concurrency:
+  group: pruefung-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend-Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Eine Wegwerf-Datenbank, damit der Vertragstest der Ablage auch gegen
+    # MariaDB laeuft - lokal laeuft er nur, wenn jemand eine startet.
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: test
+          MARIADB_DATABASE: auszeit_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      AUSZEIT_TEST_DB_HOST: 127.0.0.1
+      AUSZEIT_TEST_DB_PASS: test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Dieselbe Hauptversion wie im Dockerfile.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm test
+
+  frontend:
+    name: Frontend bauen
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm run build
