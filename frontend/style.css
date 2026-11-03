@@ -47,6 +47,13 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Zoomen mit zwei Fingern ist erlaubt, ein schneller Doppeltipp auf einen
+   Knopf soll aber nicht die Seite vergroessern. */
+button, a, input, label { touch-action: manipulation; }
+
+/* Platzhalter rechts im Kopf, damit der Titel mittig steht. */
+.kopf-platzhalter { width: 24px; }
+
 body {
   font-family: var(--font-sans);
   background-color: var(--bg-color);
@@ -541,6 +548,11 @@ a.btn { text-decoration: none; }
 }
 .raum-eingabe:focus { outline: none; border-color: var(--primary); }
 .raum-eingabe.hidden { display: none; }
+/* Unter 16 Pixeln vergroessert iOS die Seite beim Tippen ins Feld - seit
+   Zoomen wieder erlaubt ist, auch hier. */
+@media (pointer: coarse) {
+  .raum-eingabe, .liste-eingabe { font-size: 16px; }
+}
 
 /* Emergency Action */
 .emergency-action {
@@ -661,7 +673,10 @@ a.btn { text-decoration: none; }
 
 /* Toast */
 .toast {
-  position: absolute;
+  /* fixed statt absolute: Die versteckte Meldung liegt unterhalb des
+     Bildschirms. Absolut gesetzt verlaengerte sie die Seite, und ein Tipp ins
+     Eingabefeld schob den Kopf mit Name und Raum aus dem Bild. */
+  position: fixed;
   bottom: 2rem;
   left: 50%;
   transform: translateX(-50%) translateY(100px);
@@ -674,8 +689,32 @@ a.btn { text-decoration: none; }
   transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   z-index: 50;
   pointer-events: none;
+  /* Breit wie der Text, aber nie breiter als der Bildschirm - sonst bricht
+     die absolut gesetzte Meldung schon bei halber Breite um. */
+  width: max-content;
+  max-width: calc(100vw - 2rem);
 }
 .toast.show { transform: translateX(-50%) translateY(0); }
+/* Mit Knopf (etwa "Rückgängig") nimmt die Meldung Tipps an. */
+.toast.mit-knopf {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0.5rem 0.5rem 1.25rem;
+}
+.toast-knopf {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 20px;
+  background: var(--primary);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
 
 /* Utilities */
 .mt-4 { margin-top: 1rem; }

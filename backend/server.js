@@ -26,6 +26,36 @@ app.use(express.json());
 // Express keinen X-Forwarded-For-Kopf.
 app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 
+// Sicherheitskoepfe fuer alles, was die App ausliefert. Die Seite darf nur
+// eigene Skripte, Stile und Verbindungen nutzen - ein eingeschleuster Name,
+// der doch einmal am Escaping vorbeikaeme, liefe damit nicht als Skript. Und
+// keine fremde Seite darf Auszeit einrahmen: Sonst liesse sich eine Lehrkraft
+// unter einer harmlosen Oberflaeche dazu bringen, "Schueler ist angekommen"
+// zu tippen. Einzelne Routen setzen eine eigene Richtlinie (Fehlerseite,
+// Abmeldung im Rahmen des Portals, Verwaltung).
+//
+// form-action fehlt mit Absicht: Der Abmeldeknopf schickt ein Formular, das
+// zum Portal weiterleitet, und Chrome prueft auch das Ziel der Weiterleitung.
+const SEITEN_RICHTLINIE = [
+  "default-src 'self'",
+  // Das Warnsymbol im Overlay ist ein SVG als data:-Adresse.
+  "img-src 'self' data:",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'"
+].join('; ');
+
+app.use((req, res, next) => {
+  res.set({
+    'Content-Security-Policy': SEITEN_RICHTLINIE,
+    // Fuer Browser, die frame-ancestors nicht kennen.
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin'
+  });
+  next();
+});
+
 // --- Mandanten ---
 //
 // Ohne Trennung sieht jede Lehrkraft alle angemeldeten Lehrkraefte, auch die
@@ -339,6 +369,15 @@ function dauerAusUmgebung(name, vorgabe) {
   return Number.isFinite(zahl) && zahl > 0 ? zahl : vorgabe;
 }
 
+// Wie lange die abgebende Lehrkraft eine Verweisung zuruecknehmen kann. Fuer
+// den Fehltipp auf die falsche Kollegin, nicht fuer einen Sinneswandel: Nach
+// ein paar Sekunden ist der Schueler unterwegs, und die Gegenseite hat den
+// Alarm gesehen. So lange zeigt der Client den Knopf.
+const RUECKGAENGIG_MS = dauerAusUmgebung('AUSZEIT_RUECKGAENGIG_MS', 10 * 1000);
+// Der Server laesst die Haelfte obendrauf gelten: Wer in der letzten Sekunde
+// tippt, soll nicht an der Laufzeit im Schul-WLAN scheitern.
+const RUECKGAENGIG_FRIST_MS = RUECKGAENGIG_MS * 1.5;
+
 // Nur das Format, das der Server fuer Kennungen erzeugt. Haelt fremde
 // Schluessel aus der Map und begrenzt die Laenge dessen, was wir annehmen.
 function normalisiereId(wert) {
@@ -551,7 +590,11 @@ function escapeHtml(wert) {
 // Lehrkraft jetzt tun kann.
 function fehlerseite(res, status, titel, text) {
   const portalLink = portal ? `<a href="${escapeHtml(portal.aussteller)}">Zum Portal</a>` : '';
-  res.status(status).set('Cache-Control', 'no-store').type('html').send(`<!doctype html>
+  res.status(status).set({
+    'Cache-Control': 'no-store',
+    // Die Seite traegt ihren Stil selbst; Skripte hat sie keine.
+    'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'"
+  }).type('html').send(`<!doctype html>
 <html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(titel)} · Auszeit</title>
 <style>body{font-family:system-ui,sans-serif;background:#f0fdf4;color:#062f22;margin:0;padding:16px}
@@ -696,8 +739,10 @@ app.get('/sso/rueckweg', async (req, res) => {
 // Portalsitzung (sid) - die Tabs dieses Browsers, nicht die am Tablet.
 app.get('/sso/abmelden', (req, res) => {
   res.set('Cache-Control', 'no-store');
-  // Nur das Portal darf die Seite einrahmen.
+  // Nur das Portal darf die Seite einrahmen. X-Frame-Options kennt keine
+  // Ausnahme fuer eine bestimmte Herkunft und muss hier weg.
   res.set('Content-Security-Policy', `default-src 'none'; frame-ancestors ${portal ? portal.ursprung : "'none'"}`);
+  res.removeHeader('X-Frame-Options');
   const sid = portal ? portal.istVorderkanalAbmeldung(req.query) : null;
   if (sid) {
     for (const schluessel of sitzungen.schluesselWo(s => s.portal && s.sid === sid)) beendeSitzung(schluessel);
@@ -1052,11 +1097,44 @@ io.on('connection', (socket) => {
 
     io.to(receiver.id).emit('incoming_student', fuerClient(incident));
     benachrichtige(receiver.id, 'kommt', incident);
-    socket.emit('help_requested', { success: true, incident: fuerClient(incident) });
+    socket.emit('help_requested', { success: true, incident: fuerClient(incident), rueckgaengigMs: RUECKGAENGIG_MS });
 
     syncUserIncidents(sender.id);
     syncUserIncidents(receiver.id);
     broadcastAvailableTeachers(sender.schulId);
+  });
+
+  // Die abgebende Lehrkraft nimmt eine Verweisung zurueck - nur kurz nach dem
+  // Absenden und nur, solange der Schueler nicht angekommen ist. Der Vorfall
+  // verschwindet ganz, auch aus dem Protokoll: Ein Fehltipp ist keine Auszeit
+  // und soll die Auswertung des Pilots nicht verfaelschen.
+  socket.on('rueckgaengig', (data, antwort) => {
+    const melde = typeof antwort === 'function' ? antwort : () => {};
+    const teacher = aktuelleLehrkraft(socket);
+    const incident = findeVorfall(data && data.incidentId);
+    if (!teacher || !incident || incident.senderId !== teacher.id) return melde({ ok: false, grund: 'unbekannt' });
+    if (incident.status === BETREUT) return melde({ ok: false, grund: 'angekommen' });
+    if (incident.status !== UNTERWEGS
+      || Date.now() - new Date(incident.timestamp).getTime() > RUECKGAENGIG_FRIST_MS) {
+      return melde({ ok: false, grund: 'zu_spaet' });
+    }
+
+    incidents.splice(incidents.indexOf(incident), 1);
+    gibPlatzFrei(incident);
+    ablage.vorfallLoeschen(incident.id);
+
+    io.to(incident.receiverId).emit('verweisung_zurueckgenommen', {
+      incidentId: incident.id,
+      senderName: incident.senderName
+    });
+    // Gleiche Kennung wie der Alarm: Die Benachrichtigung auf dem gesperrten
+    // Bildschirm wird ersetzt, statt dort weiter zur Bestaetigung zu rufen.
+    benachrichtige(incident.receiverId, 'zurueckgenommen', incident);
+    melde({ ok: true });
+
+    syncUserIncidents(incident.senderId);
+    syncUserIncidents(incident.receiverId);
+    broadcastAvailableTeachers(incident.schulId);
   });
 
   // Aufnehmende Lehrkraft bestaetigt das Eintreffen.

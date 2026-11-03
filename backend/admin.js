@@ -6,8 +6,30 @@
 // viele gerade angemeldet sind. Ein Leck waere sonst genau hier am teuersten.
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
 const path = require('path');
 const { liesKeks } = require('./kekse');
+
+const SEITE = path.join(__dirname, 'admin.html');
+
+// Eigene Sicherheitskoepfe fuer die Verwaltung. Die Seite bringt Stil und
+// Skript im Dokument mit; erlaubt wird genau dieses Skript ueber seinen Hash,
+// kein eingeschleustes. Laeuft die Verwaltung unter /admin auf dem Port der
+// App, ersetzt die Richtlinie deren Richtlinie fuer die Seite.
+function richtlinie() {
+  const html = fs.readFileSync(SEITE, 'utf8');
+  const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+    .map(t => `'sha256-${crypto.createHash('sha256').update(t[1], 'utf8').digest('base64')}'`);
+  return [
+    "default-src 'self'",
+    `script-src ${hashes.join(' ') || "'none'"}`,
+    "style-src 'self' 'unsafe-inline'",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; ');
+}
 
 const TOKEN_MINDESTLAENGE = 16;
 const SITZUNG_GUELTIG_MS = 8 * 60 * 60 * 1000;
@@ -73,7 +95,18 @@ function erstelleAdmin(kontext) {
   const router = express.Router();
   router.use(express.json());
 
-  router.get('/', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+  const koepfe = {
+    'Content-Security-Policy': richtlinie(),
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'same-origin'
+  };
+  router.use((req, res, next) => {
+    res.set(koepfe);
+    next();
+  });
+
+  router.get('/', (req, res) => res.sendFile(SEITE));
 
   router.post('/api/anmelden', (req, res) => {
     const versuch = String((req.body && req.body.token) || '');

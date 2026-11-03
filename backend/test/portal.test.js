@@ -158,6 +158,12 @@ test('Zugang nur fuer die Gruppen aus PORTAL_ZUGANG_GRUPPEN', async () => {
   const schuelerin = await ueberPortal(adresse, testportal, person('SU', 'sid-su', ['Schüler']));
   assert.equal(schuelerin.status, 403);
   assert.equal(schuelerin.sitzung, null);
+  // Die Fehlerseite traegt ihren Stil selbst - ihre Richtlinie laesst ihn zu,
+  // Skripte und Einrahmen nicht.
+  const csp = schuelerin.antwort.headers.get('content-security-policy');
+  assert.match(csp, /style-src 'unsafe-inline'/);
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /frame-ancestors 'none'/);
 
   // Gross- und Kleinschreibung zaehlt nicht.
   const referendar = await ueberPortal(adresse, testportal, person('RF', 'sid-rf', ['referendare']));
@@ -179,6 +185,9 @@ test('Abmeldung ueber den Vorderkanal beendet die Sitzung und meldet die Tabs ab
   assert.equal(antwort.status, 204);
   // Nur das Portal darf die Seite einrahmen.
   assert.match(antwort.headers.get('content-security-policy'), /frame-ancestors http:\/\/schulos\.invalid/);
+  // X-Frame-Options: DENY gilt fuer den Rest der App, hier wuerde er den
+  // Rahmen des Portals verbieten.
+  assert.equal(antwort.headers.get('x-frame-options'), null);
   await abgemeldet;
 
   assert.equal((await sitzungsAuskunft(anmeldung.sitzung)).status, 401);
