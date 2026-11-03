@@ -14,7 +14,7 @@
 const fs = require('fs');
 const { erstelleFluechtigeAblage } = require('./fluechtig');
 const { erstelleMariadbAblage } = require('./mariadb');
-const { lehrkraftZeile, schuelerZeile, vorfallZeile } = require('./zeilen');
+const { lehrkraftZeile, schuelerZeile, vorfallZeile, einstellungenZeile } = require('./zeilen');
 
 function umWarteschlange(impl) {
   let kette = Promise.resolve();
@@ -84,6 +84,11 @@ function umWarteschlange(impl) {
     },
     pushAboLoeschen(schluessel) {
       return einreihen('Ende eines Push-Abos', () => impl.pushAboLoeschen(schluessel));
+    },
+
+    einstellungenSpeichern(schulId, einstellungen) {
+      const zeile = einstellungenZeile(schulId, einstellungen);
+      return einreihen(`Einstellungen ${schulId}`, () => impl.einstellungenSpeichern(zeile));
     },
 
     vorfallSpeichern(vorfall) {

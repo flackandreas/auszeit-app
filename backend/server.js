@@ -10,7 +10,8 @@ const { erstelleSitzungen } = require('./sitzungen');
 const { liesKeks } = require('./kekse');
 const { konfigurationAusUmgebung, erstellePortal } = require('./portal');
 const { standardAblage } = require('./ablage');
-const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile } = require('./ablage/zeilen');
+const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile, einstellungenAusZeile } = require('./ablage/zeilen');
+const { zerlegeKlingelplan, stundenenden } = require('./klingelplan');
 const { zerlegeListe, planeImport, vergleicheSchueler, anzeige } = require('./schueler');
 const { pushKonfiguration, erstellePush, abonnementPruefen, aboSchluessel, NACHRICHTEN } = require('./push');
 const { stichtagAus, schuljahrVon, schuljahrText } = require('./schuljahr');
@@ -262,6 +263,8 @@ const incidents = [];
 // haengen noch Vorfaelle. Eine Schule hat einige hundert, das passt in den
 // Speicher.
 const schuelerListe = new Map(); // kennung -> Schueler
+// Klingelplan und Hinweis je Schule, gepflegt von der Rolle Verwaltung.
+const schulEinstellungen = new Map(); // schulId -> { klingelplan, hinweisNiemand }
 
 // Mindestens ein Schultag, damit niemand mitten im Unterricht den Code erneut
 // eingeben muss - aber nicht laenger: auf einem Raum-PC, an dem sich niemand
@@ -392,10 +395,10 @@ const RUECKGAENGIG_FRIST_MS = RUECKGAENGIG_MS * 1.5;
 // fuenf lassen Luft fuer Treppenhaus und Toilette, ohne dass ein Kind eine
 // halbe Stunde unbemerkt fehlt.
 const UEBERFAELLIG_NACH_MS = dauerAusUmgebung('AUSZEIT_UEBERFAELLIG_MS', 5 * 60 * 1000);
-// So oft wird nachgesehen. Eine Viertelminute spaeter ist fuer diesen Alarm
-// nicht zu spaet, und es braucht keinen Zeitgeber je Vorfall, der einen
-// Neustart nicht ueberlebte.
-const UEBERFAELLIG_PRUEFEN_MS = 15 * 1000;
+// So oft sieht der Server nach ueberfaelligen Schuelern und abgelaufener
+// Bereitschaft. Eine Viertelminute spaeter ist fuer beides nicht zu spaet, und
+// es braucht keinen Zeitgeber je Vorfall, der einen Neustart nicht ueberlebte.
+const TAKT_MS = 15 * 1000;
 
 // Nur das Format, das der Server fuer Kennungen erzeugt. Haelt fremde
 // Schluessel aus der Map und begrenzt die Laenge dessen, was wir annehmen.
@@ -512,8 +515,28 @@ function istErreichbar(teacher) {
 // keine Schueler mehr bekommen. Eine Doppelstunde.
 const BEREIT_OHNE_VERBINDUNG_MS = dauerAusUmgebung('AUSZEIT_BEREIT_OHNE_VERBINDUNG_MS', 90 * 60 * 1000);
 
+// Ohne Klingelplan - oder nach der letzten Stunde - gilt die Bereitschaft so
+// lange; beim Einschalten laesst sie sich verdoppeln.
+const BEREIT_PAUSCHAL_MS = dauerAusUmgebung('AUSZEIT_BEREIT_PAUSCHAL_MS', 45 * 60 * 1000);
+
+function einstellungenDer(schulId) {
+  return schulEinstellungen.get(schulId) || { klingelplan: [], hinweisNiemand: '' };
+}
+
+// Bis wann eine Bereitschaft gilt, die jetzt eingeschaltet wird: zum Ende der
+// laufenden Stunde oder der danach (Doppelstunde). Die Lehrkraft waehlt beim
+// Einschalten zwischen beiden.
+function bereitOptionen(schulId, jetzt = Date.now()) {
+  const enden = stundenenden(einstellungenDer(schulId).klingelplan, jetzt);
+  if (enden.length > 0) return enden.map((bis, i) => ({ stunden: i + 1, bis, nachPlan: true }));
+  return [1, 2].map(stunden => ({ stunden, bis: jetzt + stunden * BEREIT_PAUSCHAL_MS, nachPlan: false }));
+}
+
 function istAufnahmebereit(teacher) {
   if (!teacher.isAvailable || freiePlaetze(teacher) <= 0) return false;
+  // Mit dem Stundenende ist Schluss - auch zwischen zwei Durchlaeufen von
+  // pruefeBereitschaft.
+  if (teacher.bereitBis && Date.now() >= teacher.bereitBis) return false;
   if (teacher.online) return true;
   return hatPushAbo(teacher.id) && Date.now() - (teacher.offlineSeit || 0) < BEREIT_OHNE_VERBINDUNG_MS;
 }
@@ -584,6 +607,17 @@ function broadcastAvailableTeachers(schulId) {
     }
   }
   io.to(`schule:${schulId}`).emit('available_teachers', available);
+}
+
+// Den eigenen Stand an alle Geraete der Lehrkraft zurueckspiegeln - nach einer
+// Aenderung und wenn die Bereitschaft mit dem Stundenende ablaeuft.
+function meldeEigenenStand(teacher) {
+  io.to(teacher.id).emit('status_updated', {
+    ...oeffentlich(teacher),
+    isAvailable: teacher.isAvailable,
+    plaetze: teacher.plaetze,
+    bereitBis: teacher.bereitBis || null
+  });
 }
 
 // Alle Geraete derselben Lehrkraft liegen im Raum ihrer teacherId. io.to()
@@ -1034,6 +1068,8 @@ io.on('connection', (socket) => {
       ...oeffentlich(teacher),
       isAvailable: teacher.isAvailable,
       plaetze: teacher.plaetze,
+      bereitBis: teacher.bereitBis || null,
+      hinweisNiemand: einstellungenDer(teacher.schulId).hinweisNiemand,
       schulId: teacher.schulId,
       schulName: schule.name,
       demo: schule.demo,
@@ -1055,8 +1091,17 @@ io.on('connection', (socket) => {
     const teacher = aktuelleLehrkraft(socket);
     if (!teacher) return;
 
+    const warBereit = teacher.isAvailable;
     teacher.isAvailable = Boolean(data && data.isAvailable);
     teacher.plaetze = begrenzePlaetze(data && data.capacity);
+    // Beim Einschalten das Ende festlegen: Stundenende oder eine Stunde
+    // weiter. Eine Aenderung der Plaetze laesst es stehen.
+    if (teacher.isAvailable && (!warBereit || (data && data.stunden))) {
+      const optionen = bereitOptionen(teacher.schulId);
+      const gewaehlt = optionen.find(o => o.stunden === Number(data && data.stunden)) || optionen[0];
+      teacher.bereitBis = gewaehlt.bis;
+    }
+    if (!teacher.isAvailable) teacher.bereitBis = null;
     // Aufnahmebereitschaft und Plaetze sind Laufzeitzustand; dauerhaft
     // festgehalten wird nur der Raum.
     const room = text(data && data.room, 30);
@@ -1067,12 +1112,18 @@ io.on('connection', (socket) => {
 
     // Der eigene Zustand kann sich geaendert haben (etwa der Raum), also auch
     // an die eigenen Geraete zurueckspiegeln.
-    io.to(teacher.id).emit('status_updated', {
-      ...oeffentlich(teacher),
-      isAvailable: teacher.isAvailable,
-      plaetze: teacher.plaetze
-    });
+    meldeEigenenStand(teacher);
     broadcastAvailableTeachers(teacher.schulId);
+  });
+
+  // Was beim Einschalten zur Wahl steht: bis zum Ende dieser Stunde oder der
+  // naechsten. Erst beim Antippen gefragt, damit die Uhrzeiten stimmen, auch
+  // wenn die App seit dem Morgen offen ist.
+  socket.on('bereit_optionen', (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = aktuelleLehrkraft(socket);
+    if (!teacher) return antwort({ ok: false });
+    antwort({ ok: true, optionen: bereitOptionen(teacher.schulId) });
   });
 
   // Schueler zu einer Kollegin oder einem Kollegen schicken.
@@ -1435,6 +1486,39 @@ io.on('connection', (socket) => {
     antwort({ ok: true, ergebnis });
   });
 
+  // --- Schuleinstellungen (Rolle Verwaltung) ---
+  //
+  // Klingelplan und der Hinweis, wenn niemand frei ist. Wie die Schuelerliste
+  // eine Ansicht in der App, nicht in der Betreiber-Verwaltung.
+  function verwaltendeLehrkraft() {
+    const teacher = aktuelleLehrkraft(socket);
+    return teacher && teacher.verwaltung ? teacher : null;
+  }
+
+  socket.on('einstellungen_laden', (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = verwaltendeLehrkraft();
+    if (!teacher) return antwort({ ok: false, grund: 'keine_berechtigung' });
+    antwort({ ok: true, ...einstellungenDer(teacher.schulId) });
+  });
+
+  socket.on('einstellungen_speichern', (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = verwaltendeLehrkraft();
+    if (!teacher) return antwort({ ok: false, grund: 'keine_berechtigung' });
+    const { stunden, fehler } = zerlegeKlingelplan(String((data && data.klingelplan) || '').slice(0, 4000));
+    if (fehler.length > 0) return antwort({ ok: false, grund: 'klingelplan', fehler });
+
+    const einstellungen = { klingelplan: stunden, hinweisNiemand: text(data && data.hinweisNiemand, 300) };
+    schulEinstellungen.set(teacher.schulId, einstellungen);
+    ablage.einstellungenSpeichern(teacher.schulId, einstellungen);
+    console.log(`Einstellungen ${teacher.schulId}: Klingelplan mit ${stunden.length} Stunden.`);
+    // Den Hinweis brauchen alle Geraete der Schule, den Klingelplan nur der
+    // Server.
+    io.to(`schule:${teacher.schulId}`).emit('schulhinweise', { hinweisNiemand: einstellungen.hinweisNiemand });
+    antwort({ ok: true, ...einstellungen });
+  });
+
   // Abmeldung: Die Sitzung dieses Browsers endet, und zwar fuer alle seine
   // Tabs - sonst bliebe auf dem Raum-PC ein zweiter Tab angemeldet. Der
   // Datensatz der Lehrkraft bleibt, solange sie noch jemanden betreut oder ein
@@ -1655,8 +1739,25 @@ function pruefeUeberfaellige(jetzt = Date.now()) {
   }
 }
 
-const ueberfaelligWache = setInterval(() => pruefeUeberfaellige(), UEBERFAELLIG_PRUEFEN_MS);
-if (typeof ueberfaelligWache.unref === 'function') ueberfaelligWache.unref();
+// Mit dem Stundenende endet die Bereitschaft. Die Lehrkraft sieht den Schalter
+// umspringen; wer sie in der Liste hatte, sieht sie verschwinden.
+function pruefeBereitschaft(jetzt = Date.now()) {
+  const schulen = new Set();
+  for (const teacher of teachers.values()) {
+    if (!teacher.isAvailable || !teacher.bereitBis || jetzt < teacher.bereitBis) continue;
+    teacher.isAvailable = false;
+    teacher.bereitBis = null;
+    meldeEigenenStand(teacher);
+    schulen.add(teacher.schulId);
+  }
+  for (const schulId of schulen) broadcastAvailableTeachers(schulId);
+}
+
+const takt = setInterval(() => {
+  pruefeUeberfaellige();
+  pruefeBereitschaft();
+}, TAKT_MS);
+if (typeof takt.unref === 'function') takt.unref();
 
 // --- Neustart ---
 //
@@ -1664,7 +1765,11 @@ if (typeof ueberfaelligWache.unref === 'function') ueberfaelligWache.unref();
 // Lehrkraefte, ihre gueltigen Sitzungen und die Vorfaelle, die noch laufen
 // oder heute beendet wurden. Die Belegung ist kein eigener Zustand - sie folgt
 // aus den Vorfaellen, die unterwegs oder in Betreuung sind.
-function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle, schueler = [], pushAbos: abos = [] }) {
+function wiederherstellen({ lehrkraefte, sitzungen: sitzungsZeilen, vorfaelle, schueler = [], pushAbos: abos = [], einstellungen = [] }) {
+  for (const zeile of einstellungen) {
+    const { schulId, ...rest } = einstellungenAusZeile(zeile);
+    schulEinstellungen.set(schulId, rest);
+  }
   for (const zeile of lehrkraefte) teachers.set(zeile.kennung, lehrkraftAusZeile(zeile));
   for (const abo of abos) pushAbos.set(abo.schluessel, { ...abo });
   for (const zeile of schueler) schuelerListe.set(zeile.kennung, schuelerAusZeile(zeile));
@@ -1705,7 +1810,7 @@ const bereit = (async () => {
 async function beenden() {
   clearInterval(aufraeumer);
   clearInterval(mandantenWache);
-  clearInterval(ueberfaelligWache);
+  clearInterval(takt);
   await new Promise(resolve => io.close(() => resolve()));
   await ablage.leeren();
 }
@@ -1783,4 +1888,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, pruefeUeberfaellige, ablage };
+module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, pruefeUeberfaellige, pruefeBereitschaft, ablage };

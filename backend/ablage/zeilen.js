@@ -124,6 +124,28 @@ function vorfallAusZeile(z) {
   return v;
 }
 
+// Der Klingelplan steht als JSON in einer Spalte: Er wird nur als Ganzes
+// gelesen und geschrieben.
+function einstellungenZeile(schulId, e) {
+  return {
+    schul_id: schulId,
+    klingelplan: JSON.stringify(e.klingelplan || []),
+    hinweis_niemand: e.hinweisNiemand || ''
+  };
+}
+
+function einstellungenAusZeile(z) {
+  let klingelplan = [];
+  try {
+    klingelplan = JSON.parse(z.klingelplan || '[]');
+  } catch (err) {
+    // Unlesbar: lieber ohne Plan als gar nicht starten. Dann gilt die
+    // pauschale Frist.
+  }
+  return { schulId: z.schul_id, klingelplan, hinweisNiemand: z.hinweis_niemand || '' };
+}
+
 module.exports = {
-  lehrkraftZeile, lehrkraftAusZeile, schuelerZeile, schuelerAusZeile, vorfallZeile, vorfallAusZeile
+  lehrkraftZeile, lehrkraftAusZeile, schuelerZeile, schuelerAusZeile, vorfallZeile, vorfallAusZeile,
+  einstellungenZeile, einstellungenAusZeile
 };

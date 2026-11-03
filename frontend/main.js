@@ -53,6 +53,21 @@ const listeLeer = document.getElementById('liste-leer');
 const schuelerView = document.getElementById('schueler-view');
 const btnSchuelerliste = document.getElementById('btn-schuelerliste');
 const btnZurueckListe = document.getElementById('btn-zurueck-liste');
+
+// Bereitschaft einschalten: Raum und Dauer
+const bereitFrage = document.getElementById('bereit-frage');
+const bereitRaum = document.getElementById('bereit-raum');
+const bereitOptionenLeiste = document.getElementById('bereit-optionen');
+const btnBereitAbbrechen = document.getElementById('btn-bereit-abbrechen');
+
+// Schuleinstellungen
+const btnEinstellungen = document.getElementById('btn-einstellungen');
+const einstellungenView = document.getElementById('einstellungen-view');
+const btnZurueckEinstellungen = document.getElementById('btn-zurueck-einstellungen');
+const klingelplanEingabe = document.getElementById('klingelplan-eingabe');
+const niemandEingabe = document.getElementById('niemand-eingabe');
+const einstellungenFehler = document.getElementById('einstellungen-fehler');
+const btnEinstellungenSpeichern = document.getElementById('btn-einstellungen-speichern');
 const listeStand = document.getElementById('liste-stand');
 const listeEingabe = document.getElementById('liste-eingabe');
 const btnVorschau = document.getElementById('btn-vorschau');
@@ -82,6 +97,14 @@ const toast = document.getElementById('toast');
 // State
 let currentUser = null;
 let meinePlaetze = 0;
+// Bis wann die eigene Bereitschaft gilt - der Server legt es beim Einschalten
+// fest, zum Stunden- oder Doppelstundenende.
+let meinBereitBis = null;
+// Der Schalter steht schon auf an, aber Raum und Dauer sind noch nicht
+// bestaetigt - so lange weiss der Server nichts davon.
+let raumFrageOffen = false;
+// Was die Schule fuer den Fall hinterlegt hat, dass niemand frei ist.
+let hinweisNiemand = '';
 let availableTeachers = [];
 let meineVorfaelle = [];
 let overlayQueue = [];
@@ -955,6 +978,8 @@ socket.on('login_success', (antwort) => {
   listenModus = Boolean(user.listenModus);
   istVerwaltung = Boolean(user.verwaltung);
   btnSchuelerliste.classList.toggle('hidden', !(listenModus && istVerwaltung));
+  btnEinstellungen.classList.toggle('hidden', !istVerwaltung);
+  hinweisNiemand = user.hinweisNiemand || '';
   zeichneAuswahl();
   meldeSichtbarkeit();
   pushStand();
@@ -987,17 +1012,29 @@ socket.on('logged_out', async () => {
 // der Schalter im Browser. Frueher lief beides auseinander, sobald der Server
 // die Kapazitaet selbst veraenderte.
 socket.on('status_updated', (user) => {
+  const warBereit = statusToggle.checked && !raumFrageOffen;
+  const abgelaufen = meinBereitBis && Date.now() >= meinBereitBis - 2000;
   currentUser = { ...currentUser, ...user };
   displayRoom.textContent = `Raum ${user.room}`;
   uebernehmeStatus(user);
+  // Der Server hat die Bereitschaft mit dem Stundenende beendet - sagen,
+  // warum der Schalter umspringt.
+  if (warBereit && !user.isAvailable && abgelaufen) showToast('Stundenende – Bereitschaft beendet.');
 });
 
 function uebernehmeStatus(user) {
   meinePlaetze = user.plaetze || 0;
-  statusToggle.checked = Boolean(user.isAvailable);
+  meinBereitBis = user.bereitBis || null;
+  // Waehrend die Frage nach Raum und Dauer offen ist, bleibt der Schalter an.
+  statusToggle.checked = Boolean(user.isAvailable) || raumFrageOffen;
   capBtns.forEach(b => b.classList.toggle('selected', Number(b.dataset.cap) === meinePlaetze));
   zeichneStatus();
 }
+
+socket.on('schulhinweise', (daten) => {
+  hinweisNiemand = (daten && daten.hinweisNiemand) || '';
+  renderTeachersList();
+});
 
 socket.on('available_teachers', (teachers) => {
   // Filtere mich selbst heraus
@@ -1304,8 +1341,12 @@ function belegtePlaetze() {
 function zeichneStatus() {
   const belegt = belegtePlaetze();
 
-  if (statusToggle.checked) {
-    statusText.textContent = 'Bereit zur Aufnahme';
+  if (raumFrageOffen) {
+    statusText.textContent = 'Raum und Dauer bestätigen';
+    statusText.className = 'status-text';
+    capacitySelector.classList.add('hidden');
+  } else if (statusToggle.checked) {
+    statusText.textContent = meinBereitBis ? `Bereit zur Aufnahme · bis ${uhrzeit(meinBereitBis)}` : 'Bereit zur Aufnahme';
     statusText.className = 'status-text text-green';
     capacitySelector.classList.remove('hidden');
   } else {
@@ -1329,6 +1370,13 @@ function renderTeachersList() {
   teachersList.innerHTML = '';
   if (availableTeachers.length === 0) {
     teachersList.innerHTML = '<div class="empty-state">Aktuell keine Kollegen verfügbar.</div>';
+    // Was die Schule fuer diesen Fall vorsieht - statt einer Sackgasse.
+    if (hinweisNiemand) {
+      const hinweis = document.createElement('p');
+      hinweis.className = 'niemand-hinweis';
+      hinweis.textContent = hinweisNiemand;
+      teachersList.appendChild(hinweis);
+    }
     return;
   }
 
@@ -1400,6 +1448,11 @@ function zuruecksetzen() {
   schuelerliste = [];
   gewaehlt = null;
   btnSchuelerliste.classList.add('hidden');
+  btnEinstellungen.classList.add('hidden');
+  hinweisNiemand = '';
+  meinBereitBis = null;
+  raumFrageOffen = false;
+  bereitFrage.classList.add('hidden');
   pushKarte.classList.add('hidden');
   meineVorfaelle = [];
   meinePlaetze = 0;
@@ -1439,17 +1492,94 @@ btnLogout.addEventListener('click', () => {
   zurAnmeldung();
 });
 
-// Status Toggle
+// Status Toggle. Einschalten fragt erst nach Raum und Dauer; gemeldet wird
+// die Bereitschaft mit dem Tipp auf die Dauer.
 statusToggle.addEventListener('change', () => {
-  if (statusToggle.checked && meinePlaetze === 0) {
-    // Voreinstellung: ein Platz.
-    capBtns[0].click();
+  if (statusToggle.checked) {
+    frageRaumUndDauer();
     return;
   }
-  if (!statusToggle.checked) meinePlaetze = 0;
-  capBtns.forEach(b => b.classList.toggle('selected', Number(b.dataset.cap) === meinePlaetze));
+  raumFrageOffen = false;
+  bereitFrage.classList.add('hidden');
+  meinePlaetze = 0;
+  meinBereitBis = null;
+  capBtns.forEach(b => b.classList.remove('selected'));
   zeichneStatus();
   updateStatusOnServer();
+});
+
+function uhrzeit(zeitpunkt) {
+  return new Date(zeitpunkt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+// Stimmt der Raum, und bis wann? Der Raum aendert sich jede Stunde - wer sich
+// mit dem von vorhin meldet, bekommt Schueler in einen leeren Raum geschickt.
+// Die Enden fragt die App erst jetzt ab, damit sie zur Uhrzeit passen.
+async function frageRaumUndDauer() {
+  raumFrageOffen = true;
+  bereitRaum.value = (currentUser && currentUser.room) || '';
+  bereitOptionenLeiste.innerHTML = '';
+  bereitFrage.classList.remove('hidden');
+  zeichneStatus();
+
+  let antwort = null;
+  try {
+    antwort = await socket.timeout(5000).emitWithAck('bereit_optionen', {});
+  } catch (err) {
+    antwort = null;
+  }
+  if (!raumFrageOffen) return; // inzwischen abgebrochen
+  if (!antwort || !antwort.ok) {
+    showToast('Keine Antwort vom Server.');
+    raumFrageAbbrechen();
+    return;
+  }
+  for (const option of antwort.optionen) {
+    const knopf = document.createElement('button');
+    knopf.type = 'button';
+    knopf.className = `btn ${option.stunden === 1 ? 'btn-primary' : 'btn-zweitrangig'}`;
+    const ende = option.nachPlan
+      ? `bis ${uhrzeit(option.bis)}`
+      : `für ${Math.round((option.bis - Date.now()) / 60000)} Min.`;
+    knopf.textContent = option.stunden === 1
+      ? `Bereit ${ende}`
+      : `${ende}${option.nachPlan ? ' (Doppelstunde)' : ''}`;
+    knopf.addEventListener('click', () => bereitMelden(option.stunden));
+    bereitOptionenLeiste.appendChild(knopf);
+  }
+}
+
+function bereitMelden(stunden) {
+  const raum = bereitRaum.value.trim();
+  if (!raum) {
+    showToast('Bitte den Raum eingeben.');
+    bereitRaum.focus();
+    return;
+  }
+  raumFrageOffen = false;
+  bereitFrage.classList.add('hidden');
+  if (currentUser && raum !== currentUser.room) {
+    currentUser.room = raum;
+    displayRoom.textContent = `Raum ${raum}`;
+    localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: currentUser.name, room: raum }));
+  }
+  // Voreinstellung: ein Platz.
+  if (meinePlaetze === 0) meinePlaetze = 1;
+  capBtns.forEach(b => b.classList.toggle('selected', Number(b.dataset.cap) === meinePlaetze));
+  zeichneStatus();
+  socket.emit('update_status', { isAvailable: true, capacity: meinePlaetze, room: raum, stunden });
+}
+
+function raumFrageAbbrechen() {
+  raumFrageOffen = false;
+  bereitFrage.classList.add('hidden');
+  statusToggle.checked = false;
+  zeichneStatus();
+}
+
+btnBereitAbbrechen.addEventListener('click', raumFrageAbbrechen);
+bereitRaum.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && bereitOptionenLeiste.firstChild) bereitOptionenLeiste.firstChild.click();
 });
 
 // Capacity Buttons
@@ -1464,7 +1594,9 @@ capBtns.forEach(btn => {
 
 function updateStatusOnServer() {
   socket.emit('update_status', {
-    isAvailable: statusToggle.checked,
+    // Solange Raum und Dauer offen sind, ist niemand bereit - auch wenn der
+    // Schalter schon an steht.
+    isAvailable: statusToggle.checked && !raumFrageOffen,
     capacity: meinePlaetze,
     room: currentUser && currentUser.room
   });
@@ -1519,6 +1651,60 @@ btnSchuelerliste.addEventListener('click', () => {
 });
 
 btnZurueckListe.addEventListener('click', () => {
+  switchView(dashboardView);
+});
+
+// --- Schuleinstellungen (Rolle Verwaltung) ---
+
+function zeigeEinstellungen({ klingelplan, hinweisNiemand: hinweis }) {
+  klingelplanEingabe.value = (klingelplan || [])
+    .map((stunde, i) => `${i + 1}. Stunde ${stunde.beginn} – ${stunde.ende}`).join('\n');
+  niemandEingabe.value = hinweis || '';
+  einstellungenFehler.classList.add('hidden');
+}
+
+btnEinstellungen.addEventListener('click', async () => {
+  switchView(einstellungenView);
+  try {
+    const antwort = await socket.timeout(10000).emitWithAck('einstellungen_laden', {});
+    if (antwort.ok) zeigeEinstellungen(antwort);
+    else showToast('Die Schuleinstellungen darf nur die Verwaltung ändern.');
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  }
+});
+
+btnEinstellungenSpeichern.addEventListener('click', async () => {
+  btnEinstellungenSpeichern.disabled = true;
+  try {
+    const antwort = await socket.timeout(10000).emitWithAck('einstellungen_speichern', {
+      klingelplan: klingelplanEingabe.value,
+      hinweisNiemand: niemandEingabe.value
+    });
+    if (antwort.ok) {
+      zeigeEinstellungen(antwort);
+      const stunden = antwort.klingelplan.length;
+      showToast(stunden ? `Gespeichert – ${stunden} Stunden im Klingelplan.` : 'Gespeichert – ohne Klingelplan.');
+    } else if (antwort.grund === 'klingelplan') {
+      // Zeilen, die nicht passen, mit Grund - wie bei der Schuelerliste.
+      einstellungenFehler.innerHTML = '';
+      for (const f of antwort.fehler) {
+        const punkt = document.createElement('li');
+        punkt.textContent = f.zeile ? `Zeile ${f.zeile}: ${f.text} – ${f.grund}` : f.grund;
+        einstellungenFehler.appendChild(punkt);
+      }
+      einstellungenFehler.classList.remove('hidden');
+    } else {
+      showToast('Die Schuleinstellungen darf nur die Verwaltung ändern.');
+    }
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  } finally {
+    btnEinstellungenSpeichern.disabled = false;
+  }
+});
+
+btnZurueckEinstellungen.addEventListener('click', () => {
   switchView(dashboardView);
 });
 
