@@ -109,6 +109,17 @@
             </label>
             <div id="status-text" class="status-text text-red">Keine Aufnahme</div>
 
+            <!-- Beim Einschalten: Stimmt der Raum, und bis wann? Ein Tipp
+                 bestaetigt beides. Der Raum aendert sich jede Stunde - wer
+                 sich mit dem von gestern meldet, bekommt Schueler in einen
+                 leeren Raum geschickt. -->
+            <div id="bereit-frage" class="bereit-frage hidden">
+              <label for="bereit-raum">In welchem Raum bist du gerade?</label>
+              <input id="bereit-raum" type="text" maxlength="30" autocomplete="off">
+              <div id="bereit-optionen" class="bereit-optionen"></div>
+              <button id="btn-bereit-abbrechen" class="btn btn-klein btn-still" type="button">Abbrechen</button>
+            </div>
+
             <div id="capacity-selector" class="capacity-selector hidden">
               <p>Wie viele Schüler?</p>
               <div class="capacity-buttons">
@@ -146,6 +157,7 @@
 
           <!-- Nur fuer die Rolle Verwaltung im Schulbetrieb. -->
           <button id="btn-schuelerliste" class="btn btn-zweitrangig hidden">Schülerliste verwalten</button>
+          <button id="btn-einstellungen" class="btn btn-zweitrangig hidden">Schuleinstellungen</button>
 
           <div class="emergency-action mt-auto">
             <button id="btn-emergency" class="btn btn-danger btn-huge pulse-danger">
@@ -218,6 +230,32 @@
           <div id="vorschau" class="glass-card liste-karte hidden">
             <div id="vorschau-inhalt"></div>
             <button id="btn-uebernehmen" class="btn btn-primary">Übernehmen</button>
+          </div>
+        </main>
+      </section>
+
+      <!-- Klingelplan und Hinweis: nur fuer die Rolle Verwaltung. -->
+      <section id="einstellungen-view" class="view">
+        <header class="app-header">
+          <button id="btn-zurueck-einstellungen" class="icon-btn" aria-label="Zurück">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+          </button>
+          <h2>Schuleinstellungen</h2>
+          <div class="kopf-platzhalter"></div>
+        </header>
+
+        <main class="emergency-content">
+          <div class="glass-card liste-karte">
+            <label for="klingelplan-eingabe" class="liste-label">Klingelplan – eine Zeile je Stunde mit Beginn und Ende</label>
+            <textarea id="klingelplan-eingabe" class="liste-eingabe" rows="10" spellcheck="false" placeholder="1. Stunde 7:45 – 8:30&#10;2. Stunde 8:30 – 9:15&#10;3. Stunde 9:35 – 10:20"></textarea>
+            <p class="liste-hinweis">Die Bereitschaft zur Aufnahme endet mit der laufenden Stunde; beim Einschalten lässt sie sich bis zum Ende der nächsten verlängern (Doppelstunde). Ohne Klingelplan gilt sie 45 Minuten.</p>
+            <ul id="einstellungen-fehler" class="einstellungen-fehler hidden"></ul>
+
+            <label for="niemand-eingabe" class="liste-label">Wenn niemand frei ist</label>
+            <textarea id="niemand-eingabe" class="liste-eingabe prosa" rows="3" maxlength="300" placeholder="z. B. Bitte die Schulleitung oder die Stufenleitung informieren."></textarea>
+            <p class="liste-hinweis">Steht unter „Aktuell keine Kollegen verfügbar“.</p>
+
+            <button id="btn-einstellungen-speichern" class="btn btn-primary">Speichern</button>
           </div>
         </main>
       </section>

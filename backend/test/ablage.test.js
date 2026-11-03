@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const { umWarteschlange } = require('../ablage');
 const { erstelleFluechtigeAblage } = require('../ablage/fluechtig');
 const { erstelleMariadbAblage } = require('../ablage/mariadb');
-const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile } = require('../ablage/zeilen');
+const { lehrkraftAusZeile, schuelerAusZeile, vorfallAusZeile, einstellungenAusZeile } = require('../ablage/zeilen');
 
 const STUNDE = 60 * 60 * 1000;
 
@@ -33,7 +33,7 @@ if (process.env.AUSZEIT_TEST_DB_HOST) {
       host: konfiguration.host, port: konfiguration.port, user: konfiguration.nutzer,
       password: konfiguration.passwort, database: konfiguration.datenbank
     });
-    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle, schueler, push_abos');
+    await db.query('DROP TABLE IF EXISTS migrationen, lehrkraefte, sitzungen, vorfaelle, schueler, push_abos, schuleinstellungen');
     await db.end();
     return erstelleMariadbAblage(konfiguration, { versuche: 1 });
   }]);
@@ -75,6 +75,15 @@ for (const [art, erzeuge] of arten) {
         await ablage.oeffnen();
       });
     }
+
+    await t.test('Schuleinstellungen kommen so zurueck, wie sie gespeichert wurden, und lassen sich aendern', async () => {
+      const plan = [{ beginn: '07:45', ende: '08:30' }, { beginn: '08:30', ende: '09:15' }];
+      ablage.einstellungenSpeichern('schule', { klingelplan: plan, hinweisNiemand: 'Bitte die Schulleitung informieren.' });
+      ablage.einstellungenSpeichern('schule', { klingelplan: plan.slice(0, 1), hinweisNiemand: 'Bitte die Stufenleitung informieren.' });
+      await ablage.leeren();
+      const geladen = (await laden()).einstellungen.map(einstellungenAusZeile);
+      assert.deepEqual(geladen, [{ schulId: 'schule', klingelplan: plan.slice(0, 1), hinweisNiemand: 'Bitte die Stufenleitung informieren.' }]);
+    });
 
     await t.test('Ein Vorfall kommt so zurueck, wie er gespeichert wurde', async () => {
       const v = vorfall('v-rund', {

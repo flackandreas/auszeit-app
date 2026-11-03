@@ -861,3 +861,43 @@ a.btn { text-decoration: none; }
 .push-knoepfe { display: flex; gap: 0.5rem; flex: 0 0 auto; }
 .push-karte .btn-klein { width: auto; flex: 0 0 auto; }
 .btn-klein.hidden { display: none; }
+
+/* --- Bereitschaft einschalten: Raum und Dauer --- */
+.bereit-frage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 1rem;
+  text-align: left;
+}
+.bereit-frage.hidden { display: none; }
+.bereit-frage label { font-size: 0.875rem; font-weight: 600; color: var(--text-secondary); }
+.bereit-frage input {
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  background: #fff;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+.bereit-frage input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); }
+.bereit-optionen { display: flex; flex-direction: column; gap: 0.5rem; }
+.bereit-frage .btn-still { align-self: center; width: auto; }
+
+/* Wenn niemand frei ist: was die Schule dafuer vorsieht. */
+.niemand-hinweis {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--akzent-hell);
+  color: var(--primary-hover);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* --- Schuleinstellungen --- */
+.einstellungen-fehler { margin: 0; padding-left: 1.1rem; color: var(--danger-hover); font-size: 0.875rem; line-height: 1.4; }
+.einstellungen-fehler.hidden { display: none; }
+.liste-eingabe.prosa { font-family: var(--font-sans); font-size: 1rem; }
+#einstellungen-view .emergency-content { gap: 1rem; }

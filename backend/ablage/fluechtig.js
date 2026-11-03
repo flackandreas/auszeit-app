@@ -19,6 +19,7 @@ function erstelleFluechtigeAblage() {
   const vorfaelle = new Map();
   const schueler = new Map();
   const pushAbos = new Map();
+  const einstellungen = new Map();
 
   return {
     art: 'fluechtig',
@@ -47,6 +48,8 @@ function erstelleFluechtigeAblage() {
     async pushAboSpeichern(zeile) { pushAbos.set(zeile.schluessel, kopie(zeile)); },
     async pushAboLoeschen(schluessel) { pushAbos.delete(schluessel); },
 
+    async einstellungenSpeichern(zeile) { einstellungen.set(zeile.schul_id, kopie(zeile)); },
+
     async schuelerSpeichern(zeilen) {
       for (const zeile of zeilen) schueler.set(zeile.kennung, kopie(zeile));
     },
@@ -67,7 +70,8 @@ function erstelleFluechtigeAblage() {
         sitzungen: gueltig.map(kopie),
         vorfaelle: geladen.map(kopie),
         schueler: [...schueler.values()].map(kopie),
-        pushAbos: [...pushAbos.values()].filter(a => gueltig.some(s => s.schluessel === a.sitzung)).map(kopie)
+        pushAbos: [...pushAbos.values()].filter(a => gueltig.some(s => s.schluessel === a.sitzung)).map(kopie),
+        einstellungen: [...einstellungen.values()].map(kopie)
       };
     },
 
@@ -110,7 +114,8 @@ function erstelleFluechtigeAblage() {
         sitzungen: [...sitzungen.values()].map(kopie),
         vorfaelle: [...vorfaelle.values()].map(kopie),
         schueler: [...schueler.values()].map(kopie),
-        pushAbos: [...pushAbos.values()].map(kopie)
+        pushAbos: [...pushAbos.values()].map(kopie),
+        einstellungen: [...einstellungen.values()].map(kopie)
       };
     }
   };

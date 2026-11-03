@@ -148,6 +148,13 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
       await pool.execute('DELETE FROM push_abos WHERE schluessel = ?', [schluessel]);
     },
 
+    async einstellungenSpeichern(z) {
+      await pool.execute(
+        `INSERT INTO schuleinstellungen (schul_id, klingelplan, hinweis_niemand) VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE klingelplan = VALUES(klingelplan), hinweis_niemand = VALUES(hinweis_niemand)`,
+        [z.schul_id, z.klingelplan, z.hinweis_niemand]);
+    },
+
     // Ein Import ist eine Einheit: entweder steht die ganze Liste oder keine
     // Zeile davon.
     async schuelerSpeichern(zeilen) {
@@ -184,6 +191,8 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
              OR l.kennung IN (?)`,
         [jetztMs, ['', ...vorfaelle.flatMap(v => [v.sender_kennung, v.empfaenger_kennung])]]);
       const [schueler] = await pool.query('SELECT * FROM schueler');
+      const [einstellungen] = await pool.query(
+        'SELECT schul_id, klingelplan, hinweis_niemand FROM schuleinstellungen');
       const [pushAbos] = await pool.query(
         `SELECT a.schluessel, a.sitzung, a.kennung, a.endpunkt, a.p256dh, a.auth FROM push_abos a
            JOIN sitzungen s ON s.schluessel = a.sitzung AND s.gueltig_bis > ?`, [jetztMs]);
@@ -191,6 +200,7 @@ function erstelleMariadbAblage(konfiguration, { versuche = 30, pause = 2000 } = 
         lehrkraefte,
         schueler,
         pushAbos,
+        einstellungen,
         sitzungen: sitzungen.map(s => ({
           ...s,
           gueltig_bis: Number(s.gueltig_bis),

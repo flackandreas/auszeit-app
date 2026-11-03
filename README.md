@@ -9,6 +9,8 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 - **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an. Ein geheimes Sitzungstoken bringt sie nach Verbindungsabbrüchen still in ihre Sitzung zurück (siehe [Identität und Sitzung](#identität-und-sitzung)).
 - **Anmeldung über das SchulOS-Portal**: Hängt Auszeit am Portal, kommen Name und Kürzel von dort – ohne zweites Passwort. Gefragt wird nur noch der Raum (siehe [Anmeldung über das SchulOS-Portal](#anmeldung-über-das-schulos-portal)).
 - **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
+- **Bereit bis zum Stundenende**: Beim Einschalten bestätigt die Lehrkraft den Raum und tippt das Ende an – diese Stunde oder die nächste (Doppelstunde). Danach springt der Schalter von selbst um; niemand steht morgens mit dem Raum von gestern in der Liste (siehe [Bereitschaft und Klingelplan](#bereitschaft-und-klingelplan)).
+- **Schuleinstellungen**: Die Verwaltung pflegt in der App den Klingelplan und einen Hinweis für den Fall, dass niemand frei ist.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
   - Im Schulbetrieb Auswahl aus der Schülerliste: Klasse ist vorausgewählt, Schüler antippen, Kollegin antippen – zwei Tipps (siehe [Schülerliste](#schülerliste)). Ohne Portal und bei Demo-Mandanten ein freies Namensfeld.
@@ -69,6 +71,7 @@ auszeit-app/
 │   ├── ablage/           # Dauerhafte Ablage: MariaDB oder nur Arbeitsspeicher
 │   ├── migrationen/      # Datenbankschema, beim Start eingespielt
 │   ├── schuljahr.js      # Schuljahr eines Zeitpunkts, Stichtag
+│   ├── klingelplan.js    # Klingelplan zerlegen, Ende einer Bereitschaft
 │   ├── schueler.js       # Schülerliste: Zeilen zerlegen, Abgleich mit dem Bestand
 │   ├── push.js           # Web Push: Konfiguration, Prüfung der Abos, Versand
 │   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
@@ -171,13 +174,17 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
 | `login` | Client ➔ Server | Drei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`) – oder **über das Portal** (`portal: true` und Raum); wer die Lehrkraft ist, hat dann schon der Handshake aus dem Cookie gelesen. Eine mitgeschickte Kennung wird nie beachtet. |
-| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft, angebotene Plätze, `listenModus`, Rolle `verwaltung`). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
+| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft samt `bereitBis`, angebotene Plätze, `listenModus`, Rolle `verwaltung`, `hinweisNiemand`). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
 | `schuelerliste` | Server ➔ Clients der Schule | Die aktiven Schüler (Kennung, Klasse, Vor- und Nachname) – nach der Anmeldung und nach jedem Import. Nur im Schulbetrieb. |
 | `schueler_vorschau` | Client ➔ Server (mit Rückmeldung) | Zerlegt eine eingefügte Liste und meldet, was ein Import bewirken würde. Nur Rolle Verwaltung. |
 | `schueler_uebernehmen` | Client ➔ Server (mit Rückmeldung) | Übernimmt die Liste. Nur Rolle Verwaltung. |
+| `einstellungen_laden` | Client ➔ Server (mit Rückmeldung) | Klingelplan und Hinweis der Schule. Nur Rolle Verwaltung. |
+| `einstellungen_speichern` | Client ➔ Server (mit Rückmeldung) | Speichert Klingelplan (als Text, eine Zeile je Stunde) und Hinweis. Ein Plan mit Fehlern wird abgelehnt (`grund: 'klingelplan'`, Zeilen mit Grund). Nur Rolle Verwaltung. |
+| `schulhinweise` | Server ➔ Clients der Schule | Der neue Hinweis für „niemand frei“, nach dem Speichern. |
+| `bereit_optionen` | Client ➔ Server (mit Rückmeldung) | Die möglichen Enden einer Bereitschaft, die jetzt beginnt: `[{ stunden, bis, nachPlan }]`. |
 | `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule`, `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt), `nur_portal` (Anmeldung mit Code abgeschaltet), `portal_sitzung_fehlt` oder `raum_fehlt`. |
-| `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. |
-| `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
+| `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. Beim Einschalten wählt `stunden` (1 oder 2) das Ende; eine Änderung der Plätze lässt es stehen. |
+| `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück, mit `bereitBis`. Kommt auch, wenn die Bereitschaft mit dem Stundenende abläuft. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
 | `request_help` | Client ➔ Server | Startet eine Auszeit. Der Platz wird sofort belegt, nicht erst bei der Ankunft. Im Schulbetrieb mit `schuelerKennung` aus der Liste (ein Freitext wird dort verworfen), sonst mit `studentName`. |
 | `help_requested` | Server ➔ Sender | Rückmeldung, ob die Verweisung angenommen wurde, dazu `rueckgaengigMs`: so lange zeigt der Client „Rückgängig“. |
@@ -411,6 +418,7 @@ Tabellen:
 | `lehrkraefte` | Kennung, Schule, `sub` bei Anmeldung über das Portal, Name, Kürzel, Raum, Rolle „Verwaltung“ |
 | `sitzungen` | Hash des Tokens, Kennung, Ablauf, bei Portal-Anmeldung `sid` und ID-Token |
 | `push_abos` | Je Gerät: Hash der Adresse, Sitzung, Kennung, Adresse und Schlüssel des Push-Dienstes. Endet mit der Sitzung. |
+| `schuleinstellungen` | Je Schule: Klingelplan (JSON) und Hinweis „niemand frei“. Bleibt beim Schuljahreswechsel stehen. |
 | `schueler` | Schuljahr, Klasse, Vor- und Nachname, normalisierter Schlüssel, Zeitpunkt der Archivierung |
 | `vorfaelle` | Schuljahr, Schüler (Kennung aus der Liste, nur bei Freitext ein Name), abgebende und aufnehmende Lehrkraft samt Raum, Zustand, je Zustandswechsel ein Zeitpunkt (`angefordert_am`, `angekommen_am`, `rueckholwunsch_am`, `zurueckgeschickt_am`, `zurueck_am`, `beendet_am`), Art des Abschlusses (`zurueck`, `einseitig`, `abgebrochen`) |
 
@@ -432,6 +440,49 @@ docker compose exec db sh -c 'mariadb -uauszeit -p"$(cat /geheimnis/db)" auszeit
 
 **Im Verbund** liegen die Daten in `db_auszeit` der gemeinsamen MariaDB;
 `DB_AUSZEIT_PASSWORT` in der `.env` des Portals ist dafür Pflicht.
+
+### Bereitschaft und Klingelplan
+
+Der Raum einer Lehrkraft ändert sich jede Stunde. Eine Bereitschaft, die
+einfach stehen bleibt, schickt Schüler in einen leeren Raum – und wer abends
+den Schalter nicht ausschaltet, stand am nächsten Morgen mit dem Raum von
+gestern wieder in der Liste. Deshalb:
+
+- **Beim Einschalten** fragt die App: „In welchem Raum bist du gerade?“ (der
+  bisherige steht schon drin) und bietet zwei Enden an: „Bereit bis 08:30“ und
+  „bis 09:15 (Doppelstunde)“. Ein Tipp bestätigt Raum und Dauer. Erst dann
+  steht die Lehrkraft in der Liste.
+- **Mit dem Ende** springt der Schalter von selbst um („Stundenende –
+  Bereitschaft beendet“), und die Lehrkraft verschwindet aus den Listen. Der
+  Server sieht alle 15 Sekunden nach; Verweisungen lehnt er schon ab der
+  Sekunde des Endes ab.
+- Wer **kurz vor dem Klingeln** (weniger als fünf Minuten) einschaltet, meint
+  die nächste Stunde; in der Pause oder vor Schulbeginn zählt ebenfalls die
+  nächste.
+- **Ohne Klingelplan** oder nach der letzten Stunde gilt eine feste Frist:
+  „Bereit für 45 Min.“ oder „für 90 Min.“.
+
+Die Bereitschaft ist Laufzeitzustand und steht nicht in der Datenbank; nach
+einem Neustart ist niemand bereit.
+
+**Schuleinstellungen.** Lehrkräfte mit der Rolle „Verwaltung“ sehen neben
+„Schülerliste verwalten“ den Knopf „Schuleinstellungen“:
+
+- **Klingelplan**: eine Zeile je Stunde mit Beginn und Ende, etwa
+  `1. Stunde 7:45 – 8:30` oder `07.45-08.30`. Ein Plan für alle Wochentage.
+  Zeilen, die nicht passen (eine Uhrzeit fehlt, Ende vor Beginn, Überschneidung),
+  nennt die App mit Grund; gespeichert wird dann nichts.
+- **Wenn niemand frei ist**: ein Satz, der unter „Aktuell keine Kollegen
+  verfügbar“ steht – etwa „Bitte die Schulleitung oder die Stufenleitung
+  informieren“. Statt einer Sackgasse sieht die Lehrkraft, was die Schule für
+  diesen Fall vorsieht.
+
+Gerechnet wird in der Ortszeit des Servers (im Container `TZ=Europe/Berlin`),
+wie beim Schuljahr.
+
+| Variable | Vorgabe | Bedeutung |
+| :--- | :--- | :--- |
+| `AUSZEIT_BEREIT_PAUSCHAL_MS` | 45 min | Dauer einer Bereitschaft ohne Klingelplan oder nach der letzten Stunde; die zweite Wahl ist das Doppelte |
 
 ### Schülerliste
 
