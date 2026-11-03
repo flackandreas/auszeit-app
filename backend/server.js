@@ -30,8 +30,7 @@ app.set('trust proxy', 'loopback, linklocal, uniquelocal');
 // eigene Skripte, Stile und Verbindungen nutzen - ein eingeschleuster Name,
 // der doch einmal am Escaping vorbeikaeme, liefe damit nicht als Skript. Und
 // keine fremde Seite darf Auszeit einrahmen: Sonst liesse sich eine Lehrkraft
-// unter einer harmlosen Oberflaeche dazu bringen, "Schueler ist angekommen"
-// zu tippen. Einzelne Routen setzen eine eigene Richtlinie (Fehlerseite,
+// unter einer harmlosen Oberflaeche dazu bringen, "Ist angekommen" zu tippen. Einzelne Routen setzen eine eigene Richtlinie (Fehlerseite,
 // Abmeldung im Rahmen des Portals, Verwaltung).
 //
 // form-action fehlt mit Absicht: Der Abmeldeknopf schickt ein Formular, das
@@ -388,6 +387,16 @@ const RUECKGAENGIG_MS = dauerAusUmgebung('AUSZEIT_RUECKGAENGIG_MS', 10 * 1000);
 // tippt, soll nicht an der Laufzeit im Schul-WLAN scheitern.
 const RUECKGAENGIG_FRIST_MS = RUECKGAENGIG_MS * 1.5;
 
+// Nach wie vielen Minuten ohne Bestaetigung ein Schueler als "noch nicht
+// angekommen" gilt. Der Weg zwischen zwei Raeumen dauert ein, zwei Minuten;
+// fuenf lassen Luft fuer Treppenhaus und Toilette, ohne dass ein Kind eine
+// halbe Stunde unbemerkt fehlt.
+const UEBERFAELLIG_NACH_MS = dauerAusUmgebung('AUSZEIT_UEBERFAELLIG_MS', 5 * 60 * 1000);
+// So oft wird nachgesehen. Eine Viertelminute spaeter ist fuer diesen Alarm
+// nicht zu spaet, und es braucht keinen Zeitgeber je Vorfall, der einen
+// Neustart nicht ueberlebte.
+const UEBERFAELLIG_PRUEFEN_MS = 15 * 1000;
+
 // Nur das Format, das der Server fuer Kennungen erzeugt. Haelt fremde
 // Schluessel aus der Map und begrenzt die Laenge dessen, was wir annehmen.
 function normalisiereId(wert) {
@@ -535,8 +544,22 @@ function fuerClient(incident) {
     // Push. Daran haengen der Hinweis "nicht erreichbar" und der einseitige
     // Abschluss.
     senderOnline: istErreichbar(sender),
-    receiverOnline: istErreichbar(receiver)
+    receiverOnline: istErreichbar(receiver),
+    ueberfaellig: istUeberfaellig(incident)
   };
+}
+
+// Seit wann ist der Schueler gerade zwischen zwei Raeumen - auf dem Hin- oder
+// dem Rueckweg? null, solange er in einem Raum ist.
+function unterwegsSeit(incident) {
+  if (incident.status === UNTERWEGS) return new Date(incident.timestamp).getTime();
+  if (incident.status === AUF_DEM_RUECKWEG && incident.rueckwegSeit) return new Date(incident.rueckwegSeit).getTime();
+  return null;
+}
+
+function istUeberfaellig(incident, jetzt = Date.now()) {
+  const seit = unterwegsSeit(incident);
+  return seit !== null && jetzt - seit > UEBERFAELLIG_NACH_MS;
 }
 
 // Der Platz gehoert zum Vorfall, nicht zum Zustand: er wird frei, sobald der
@@ -1608,6 +1631,33 @@ const aufraeumer = setInterval(() => {
 }, AUFRAEUM_INTERVALL_MS);
 if (typeof aufraeumer.unref === 'function') aufraeumer.unref();
 
+// Kein Schueler soll unbemerkt zwischen zwei Raeumen verloren gehen. Ist er
+// nach ein paar Minuten nicht als angekommen bestaetigt, bekommen beide Seiten
+// einen Alarm, einmal je Weg. Bewusst beide: Die eine hat vielleicht nur
+// vergessen zu bestaetigen, die andere muss nachsehen koennen.
+//
+// Den Alarm in der App loest der Abgleich aus - "ueberfaellig" steht am
+// Vorfall. Wer die App nicht offen hat, bekommt eine Benachrichtigung.
+function pruefeUeberfaellige(jetzt = Date.now()) {
+  for (const v of incidents) {
+    if (!istUeberfaellig(v, jetzt)) continue;
+    // Hin- und Rueckweg folgen aufeinander; welcher schon gemeldet wurde,
+    // genuegt als Merkmal. Nach einem Neustart kommt der Alarm schlimmstenfalls
+    // ein zweites Mal.
+    if (v.alarmFuer === v.status) continue;
+    v.alarmFuer = v.status;
+
+    const hinweg = v.status === UNTERWEGS;
+    benachrichtige(hinweg ? v.receiverId : v.senderId, 'ueberfaellig_erwartet', v);
+    benachrichtige(hinweg ? v.senderId : v.receiverId, 'ueberfaellig_geschickt', v);
+    syncUserIncidents(v.senderId);
+    syncUserIncidents(v.receiverId);
+  }
+}
+
+const ueberfaelligWache = setInterval(() => pruefeUeberfaellige(), UEBERFAELLIG_PRUEFEN_MS);
+if (typeof ueberfaelligWache.unref === 'function') ueberfaelligWache.unref();
+
 // --- Neustart ---
 //
 // Nach einem Neustart steht der Stand aus der Ablage wieder da: die bekannten
@@ -1655,6 +1705,7 @@ const bereit = (async () => {
 async function beenden() {
   clearInterval(aufraeumer);
   clearInterval(mandantenWache);
+  clearInterval(ueberfaelligWache);
   await new Promise(resolve => io.close(() => resolve()));
   await ablage.leeren();
 }
@@ -1732,4 +1783,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, ablage };
+module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, pruefeUeberfaellige, ablage };

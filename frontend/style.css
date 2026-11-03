@@ -437,6 +437,14 @@ input:checked + .slider:before { transform: translateX(36px); }
   background: rgba(220, 38, 38, 0.10);
   color: var(--danger-hover);
 }
+/* Seit ein paar Minuten unterwegs und nicht bestaetigt. */
+.status-badge.ueberfaellig {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+}
+/* Ist angekommen / Ist wieder da: eigene Zeile, volle Breite. */
+.incident-aktionen .btn-bestaetigen { flex: 1 1 100%; }
 
 /* Ein Vorfall kann zwei Schaltflaechen tragen - etwa Zurueckschicken und
    den einseitigen Abschluss. */
@@ -648,6 +656,11 @@ a.btn { text-decoration: none; }
 }
 .notification-card h2 { color: var(--primary); margin-bottom: 1rem; font-size: 1.75rem; }
 .notification-card p { font-size: 1.125rem; margin-bottom: 2rem; line-height: 1.5; }
+/* "Noch nicht angekommen": rot statt Bernstein, damit es sich vom
+   gewohnten "Schueler auf dem Weg" abhebt. */
+.notification-card.dringend { border-color: var(--danger); box-shadow: 0 0 40px var(--danger-glow); }
+.notification-card.dringend h2 { color: var(--danger-hover); }
+.notification-card.dringend .pulse-ring { background: var(--danger); }
 .pulse-ring {
   width: 80px; height: 80px;
   border-radius: 50%;
