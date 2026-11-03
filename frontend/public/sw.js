@@ -4,6 +4,8 @@
 // Dateien vorhaelt, liefert nach einem Update gern die alte Fassung aus - und
 // Auszeit ist ohne Verbindung zum Server ohnehin nicht zu gebrauchen.
 
+const BLEIBT_STEHEN = new Set(['kommt', 'ueberfaellig_erwartet', 'ueberfaellig_geschickt']);
+
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
@@ -25,8 +27,9 @@ self.addEventListener('push', (event) => {
     icon: '/icons/auszeit-192.png',
     badge: '/icons/auszeit-192.png',
     vibrate: [200, 100, 200, 100, 500],
-    // Ein Schueler auf dem Weg soll nicht von selbst verschwinden.
-    requireInteraction: daten.art === 'kommt',
+    // Ein Schueler auf dem Weg - oder einer, der nicht ankommt - soll nicht
+    // von selbst verschwinden.
+    requireInteraction: BLEIBT_STEHEN.has(daten.art),
     data: { ziel: daten.ziel || '/' }
   }));
 });

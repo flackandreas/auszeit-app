@@ -76,6 +76,7 @@ const schulKennzeichen = document.getElementById('schul-kennzeichen');
 const notificationTitle = document.getElementById('notification-title');
 const notificationText = document.getElementById('notification-text');
 const btnNotificationAction = document.getElementById('btn-notification-action');
+const notificationKarte = notificationLayer.querySelector('.notification-card');
 const toast = document.getElementById('toast');
 
 // State
@@ -89,10 +90,17 @@ let overlayQueue = [];
 // zweistufige Handschlag mit vertauschten Rollen; welche Seite handeln darf,
 // steht in "rolle". Ein weiterer Zustand ist damit eine Zeile, keine neue
 // Verzweigung im Rendern.
+//
+// Bestaetigt wird auf der Karte, nicht im Overlay. Das Overlay kommt, sobald
+// der Schueler losgeht - wer dort "angekommen" tippt, um es loszuwerden,
+// bestaetigt etwas, das noch nicht stimmt.
 const ZUSTAND = {
   unterwegs: {
     text: 'Auf dem Weg',
-    klasse: 'unterwegs'
+    klasse: 'unterwegs',
+    aktionen: [
+      { rolle: 'empfaenger', label: 'Ist angekommen', event: 'confirm_arrival', haupt: true }
+    ]
   },
   betreut: {
     text: 'In Betreuung',
@@ -110,7 +118,7 @@ const ZUSTAND = {
     text: 'Auf dem Rückweg',
     klasse: 'rueckweg',
     aktionen: [
-      { rolle: 'sender', label: 'Ist zurück', event: 'confirm_return' }
+      { rolle: 'sender', label: 'Ist wieder da', event: 'confirm_return', haupt: true }
     ]
   },
   zurueck: {
@@ -788,10 +796,15 @@ listeEingabe.addEventListener('input', () => vorschauKarte.classList.add('hidden
 // --- Overlay-Warteschlange ---
 // Frueher merkte sich der Client genau einen Vorfall. Kamen zwei Meldungen
 // kurz hintereinander, ueberschrieb die zweite die erste, und der erste
-// Vorfall liess sich nie mehr bestaetigen. Mit dem Rueckweg gibt es eine
-// zweite Sorte Meldung, die zusaetzlich kollidieren kann.
+// Vorfall liess sich nie mehr bestaetigen. Mit dem Rueckweg und dem Alarm
+// "noch nicht angekommen" gibt es mehrere Sorten Meldung je Vorfall; jede hat
+// deshalb einen eigenen Schluessel.
+//
+// Das Overlay ist nur der Alarm. Es schliesst mit "Verstanden" - bestaetigt
+// wird auf der Karte, wenn der Schueler wirklich da ist.
 function zeigeOverlay(eintrag) {
-  if (overlayQueue.some(e => e.incidentId === eintrag.incidentId)) return;
+  if (gesehen.has(eintrag.schluessel)) return;
+  if (overlayQueue.some(e => e.schluessel === eintrag.schluessel)) return;
   overlayQueue.push(eintrag);
   if (overlayQueue.length === 1) naechstesOverlay();
 }
@@ -804,8 +817,7 @@ function naechstesOverlay() {
   }
   notificationTitle.textContent = eintrag.titel;
   notificationText.innerHTML = eintrag.text;
-  btnNotificationAction.textContent = eintrag.buttonLabel;
-  btnNotificationAction.disabled = false;
+  notificationKarte.classList.toggle('dringend', Boolean(eintrag.dringend));
   notificationLayer.classList.remove('hidden');
 
   if (navigator.vibrate) navigator.vibrate(eintrag.vibration);
@@ -813,10 +825,7 @@ function naechstesOverlay() {
 
 btnNotificationAction.addEventListener('click', () => {
   const eintrag = overlayQueue.shift();
-  if (eintrag) {
-    bestaetigt.add(eintrag.incidentId);
-    socket.emit(eintrag.event, { incidentId: eintrag.incidentId });
-  }
+  if (eintrag) gesehen.add(eintrag.schluessel);
   naechstesOverlay();
 });
 
@@ -1001,25 +1010,62 @@ socket.on('available_teachers', (teachers) => {
 // geoeffnet wird, beim Abgleich danach (siehe sync_incidents).
 function meldeAnkunft(incident) {
   zeigeOverlay({
+    schluessel: `${incident.id}:kommt`,
+    incidentId: incident.id,
+    status: 'unterwegs',
     titel: 'Schüler auf dem Weg!',
     text: `<strong>${escapeHtml(incident.senderName)}</strong> schickt `
-      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir.`,
-    buttonLabel: 'Schüler ist angekommen',
-    event: 'confirm_arrival',
-    incidentId: incident.id,
+      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir. `
+      + 'Bei Ankunft auf der Karte „Ist angekommen“ tippen.',
     vibration: [200, 100, 200, 100, 500]
   });
 }
 
 function meldeRueckkehr(incident) {
   zeigeOverlay({
+    schluessel: `${incident.id}:zurueck`,
+    incidentId: incident.id,
+    status: 'auf_dem_rueckweg',
     titel: 'Schüler kommt zurück',
     text: `<strong>${escapeHtml(incident.receiverName)}</strong> schickt `
-      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir zurück.`,
-    buttonLabel: 'Ist wieder da',
-    event: 'confirm_return',
-    incidentId: incident.id,
+      + `<strong>${escapeHtml(schuelerName(incident))}</strong> zu dir zurück. `
+      + 'Bei Ankunft auf der Karte „Ist wieder da“ tippen.',
     vibration: [200, 100, 200]
+  });
+}
+
+// Der Schueler ist seit ein paar Minuten unterwegs und nicht als angekommen
+// bestaetigt. Wer ihn erwartet, hat vielleicht nur das Bestaetigen vergessen;
+// wer ihn losgeschickt hat, muss nachsehen koennen.
+function meldeUeberfaellig(inc) {
+  const hinweg = inc.status === 'unterwegs';
+  const ichErwarte = (hinweg ? inc.receiverId : inc.senderId) === currentUser.id;
+  const seit = new Date(hinweg ? inc.timestamp : inc.rueckwegSeit);
+  const minuten = Math.max(1, Math.round((Date.now() - seit) / 60000));
+  const dauer = minuten === 1 ? 'einer Minute' : `${minuten} Minuten`;
+  const schueler = `<strong>${escapeHtml(schuelerName(inc))}</strong>`;
+  let titel;
+  let text;
+  if (ichErwarte) {
+    const von = escapeHtml(hinweg ? inc.senderName : inc.receiverName);
+    titel = 'Ist der Schüler da?';
+    text = `${schueler} ist seit ${dauer} zu dir unterwegs. Schon da? Dann auf der Karte `
+      + `„${hinweg ? 'Ist angekommen' : 'Ist wieder da'}“ tippen. Sonst bitte mit <strong>${von}</strong> klären.`;
+  } else {
+    const zu = escapeHtml(hinweg ? inc.receiverName : inc.senderName);
+    const raum = hinweg ? inc.receiverRaum : inc.senderRaum;
+    titel = 'Noch nicht angekommen';
+    text = `${schueler} ist seit ${dauer} zu <strong>${zu}</strong>`
+      + `${raum ? ` (Raum ${escapeHtml(raum)})` : ''} unterwegs und noch nicht angekommen. Bitte nachsehen.`;
+  }
+  zeigeOverlay({
+    schluessel: `${inc.id}:ueberfaellig:${inc.status}`,
+    incidentId: inc.id,
+    status: inc.status,
+    titel,
+    text,
+    dringend: true,
+    vibration: [400, 150, 400, 150, 400]
   });
 }
 
@@ -1037,20 +1083,20 @@ socket.on('verweisung_zurueckgenommen', ({ incidentId, senderName }) => {
   if (navigator.vibrate) navigator.vibrate(120);
 });
 
-// Schon bestaetigt, aber vom Server noch nicht zurueckgemeldet: nicht erneut
-// als offene Meldung zeigen.
-const bestaetigt = new Set();
+// Overlays, die mit "Verstanden" geschlossen wurden - der naechste Abgleich
+// soll sie nicht wieder hochholen.
+const gesehen = new Set();
 
-// Was beim Abgleich noch auf eine Reaktion wartet. Ohne das stuende die
-// Lehrkraft, die ueber die Benachrichtigung in die App kommt, vor einer Karte
-// ohne Schaltflaeche - die Ankunft liess sich bisher nur im Overlay
-// bestaetigen, und das kam nur live.
+// Was beim Abgleich noch auf Aufmerksamkeit wartet. So kommt der Alarm auch zu
+// einer Lehrkraft, die erst ueber die Benachrichtigung in die App kommt - und
+// der Alarm "noch nicht angekommen" ueberhaupt erst: Den loest der Server ueber
+// den Abgleich aus.
 function holeOffeneMeldungenNach() {
   if (!currentUser) return;
   for (const inc of meineVorfaelle) {
-    if (bestaetigt.has(inc.id)) continue;
     if (inc.receiverId === currentUser.id && inc.status === 'unterwegs') meldeAnkunft(inc);
     if (inc.senderId === currentUser.id && inc.status === 'auf_dem_rueckweg') meldeRueckkehr(inc);
+    if (inc.ueberfaellig) meldeUeberfaellig(inc);
   }
 }
 
@@ -1141,8 +1187,7 @@ function raeumeOverlayAuf() {
   overlayQueue = overlayQueue.filter(eintrag => {
     const vorfall = meineVorfaelle.find(i => i.id === eintrag.incidentId);
     if (!vorfall) return true;
-    const erwartet = eintrag.event === 'confirm_arrival' ? 'unterwegs' : 'auf_dem_rueckweg';
-    return vorfall.status === erwartet;
+    return vorfall.status === eintrag.status;
   });
   if (overlayQueue.length !== vorher) naechstesOverlay();
 }
@@ -1194,6 +1239,10 @@ function vorfallKarte(inc) {
     ? '<span class="status-badge offline">nicht erreichbar</span>'
     : '';
 
+  // Bleibt stehen, bis jemand bestaetigt - das Overlay dazu kommt nur einmal.
+  const ueberfaelligMarke = inc.ueberfaellig
+    ? `<span class="status-badge ueberfaellig">${inc.status === 'unterwegs' ? 'Noch nicht angekommen' : 'Noch nicht zurück'}</span>`
+    : '';
 
   const el = document.createElement('div');
   el.className = `incident-item ${binSender ? 'sent' : 'received'}`;
@@ -1205,12 +1254,13 @@ function vorfallKarte(inc) {
     <div><strong>${escapeHtml(schuelerName(inc))}</strong></div>
     <div class="incident-meta mt-1">
       <span class="status-badge ${zustand.klasse}">${zustand.text}</span>
-      ${wunschMarke}${offlineMarke}
+      ${ueberfaelligMarke}${wunschMarke}${offlineMarke}
     </div>
   `;
 
-  // Handeln darf nur, wen der Zustand vorsieht - die sendende Seite bestaetigt
-  // die Rueckkehr, die aufnehmende schickt zurueck.
+  // Handeln darf nur, wen der Zustand vorsieht - bestaetigt wird jeweils in
+  // dem Raum, in dem der Schueler ankommt; zurueckschicken kann die
+  // aufnehmende Seite.
   const aktionen = (zustand.aktionen || []).filter(a =>
     (a.rolle === 'sender') === binSender && (!a.nurWenn || a.nurWenn(inc))
   );
@@ -1224,7 +1274,11 @@ function vorfallKarte(inc) {
     leiste.className = 'incident-aktionen';
     aktionen.forEach(aktion => {
       const btn = document.createElement('button');
-      btn.className = `btn btn-klein${aktion.still ? ' btn-still' : ''}`;
+      // Die Bestaetigung ist der Handgriff, auf den es ankommt - gross und
+      // gut zu treffen.
+      btn.className = aktion.haupt
+        ? 'btn btn-primary btn-bestaetigen'
+        : `btn btn-klein${aktion.still ? ' btn-still' : ''}`;
       btn.textContent = aktion.label;
       btn.addEventListener('click', () => {
         leiste.querySelectorAll('button').forEach(b => { b.disabled = true; });

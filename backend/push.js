@@ -106,6 +106,16 @@ const NACHRICHTEN = {
     titel: 'Verweisung zurückgenommen',
     text: 'Es kommt doch kein Schüler zu dir.'
   },
+  // Nach ein paar Minuten ohne Bestaetigung - an die Seite, in deren Raum der
+  // Schueler ankommen soll, und an die, die ihn losgeschickt hat.
+  ueberfaellig_erwartet: {
+    titel: 'Ist der Schüler bei dir angekommen?',
+    text: 'Noch keine Bestätigung. Bitte in Auszeit bestätigen oder nachfragen.'
+  },
+  ueberfaellig_geschickt: {
+    titel: 'Schüler noch nicht angekommen',
+    text: 'Noch keine Bestätigung der Ankunft. Bitte nachsehen.'
+  },
   // Der Selbsttest auf Knopfdruck.
   test: {
     titel: 'Auszeit erreicht dich',

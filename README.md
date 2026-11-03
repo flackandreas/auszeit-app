@@ -16,14 +16,15 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
   - **Rückgängig**: Zehn Sekunden lang lässt sich ein Fehltipp zurücknehmen, solange der Schüler nicht angekommen ist (siehe [Rückgängig](#rückgängig)).
 - **Benachrichtigungen (Web Push)**: Auch bei gesperrtem Bildschirm kommt der Alarm aufs Handy – ohne Schülernamen. Auf iPhone und iPad, sobald Auszeit auf dem Home-Bildschirm liegt (siehe [Benachrichtigungen](#benachrichtigungen)).
 - **Sofort-Benachrichtigung & Ankunftsbestätigung**:
-  - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration.
-  - Per Klick ("Schüler ist angekommen") wird der Empfang bestätigt.
+  - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration. Es schließt mit „Verstanden“.
+  - Bestätigt wird auf der Vorfallskarte ("Ist angekommen"), wenn der Schüler wirklich da ist – nicht im Overlay, das schon beim Losgehen kommt.
   - Die absendende Lehrkraft erhält sofort eine Bestätigung (Toast-Nachricht), dass der Schüler sicher angekommen ist.
   - Der Platz gilt bereits ab dem Absenden als belegt, damit nicht zwei Lehrkräfte gleichzeitig auf denselben freien Platz schicken.
+- **Noch nicht angekommen**: Ist ein Schüler nach fünf Minuten nicht bestätigt, bekommen beide Seiten einen Alarm – auf dem Hin- wie auf dem Rückweg (siehe [Noch nicht angekommen](#noch-nicht-angekommen)).
 - **Rückkehr in die Klasse**:
   - Die aufnehmende Lehrkraft schickt den Schüler per Klick auf der Vorfallskarte zurück ("Zurückschicken").
   - Sie erfährt dabei den Raum, in dem die abgebende Lehrkraft **aktuell** unterrichtet — nach 45 Minuten ist das selten noch der Raum der Verweisung.
-  - Die abgebende Lehrkraft erhält ein Overlay ("Schüler kommt zurück") und bestätigt die Rückkehr ("Ist wieder da"). Damit ist der Vorfall geschlossen.
+  - Die abgebende Lehrkraft erhält ein Overlay ("Schüler kommt zurück") und bestätigt die Rückkehr auf der Karte ("Ist wieder da"). Damit ist der Vorfall geschlossen.
   - Der belegte Platz wird beim Zurückschicken sofort wieder frei.
 - **Rückholwunsch**:
   - Die abgebende Lehrkraft kann auf ihrer Karte "Zurückholen" antippen, etwa wenn die Stunde endet.
@@ -199,7 +200,7 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `push_abmelden` | Client ➔ Server (mit Rückmeldung) | Benachrichtigungen auf diesem Gerät aus. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
 | `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. |
-| `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume und die Erreichbarkeit beider Seiten. |
+| `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume, die Erreichbarkeit beider Seiten und `ueberfaellig` (seit `AUSZEIT_UEBERFAELLIG_MS` unterwegs und nicht bestätigt). |
 
 ### Zustandsautomat eines Vorfalls
 
@@ -248,6 +249,37 @@ Meldung am unteren Rand.
 | Variable | Vorgabe | Bedeutung |
 | :--- | :--- | :--- |
 | `AUSZEIT_RUECKGAENGIG_MS` | 10 s | Wie lange „Rückgängig“ angeboten wird |
+
+### Noch nicht angekommen
+
+Zwischen zwei Räumen soll kein Schüler unbemerkt verloren gehen. Ist er fünf
+Minuten nach dem Losschicken nicht als angekommen bestätigt, bekommen **beide
+Seiten** einen Alarm – auf dem Hinweg wie auf dem Rückweg, je einmal:
+
+- **Wer den Schüler erwartet**: „Ist der Schüler da?“ Vielleicht wurde nur das
+  Bestätigen vergessen – dann auf der Karte „Ist angekommen“ bzw. „Ist wieder
+  da“ tippen. Sonst mit der Gegenseite klären.
+- **Wer ihn losgeschickt hat**: „Noch nicht angekommen“, mit Namen und Raum der
+  Gegenseite – bitte nachsehen.
+
+In der App kommt der Alarm als Overlay, auf der Karte steht danach „Noch nicht
+angekommen“ bzw. „Noch nicht zurück“, bis jemand bestätigt. Ohne offene App
+kommt eine Benachrichtigung; sie ersetzt die zum selben Vorfall und bleibt
+stehen, bis sie angetippt wird. Während der Betreuung gibt es keinen Alarm,
+gleich wie lange sie dauert.
+
+Dafür ist das Overlay nur noch der Alarm: Es schließt mit „Verstanden“,
+bestätigt wird auf der Karte. Vorher hieß der einzige Knopf im Overlay „Schüler
+ist angekommen“ – und wer das Overlay loswerden wollte, bestätigte eine Ankunft,
+bevor der Schüler da war. Dann hätte es auch keinen Alarm gegeben.
+
+Der Server sieht alle 15 Sekunden nach. Welcher Weg schon gemeldet wurde, steht
+nur im Speicher; nach einem Neustart kommt ein Alarm schlimmstenfalls ein
+zweites Mal.
+
+| Variable | Vorgabe | Bedeutung |
+| :--- | :--- | :--- |
+| `AUSZEIT_UEBERFAELLIG_MS` | 5 min | Nach wie langer Zeit ohne Bestätigung der Alarm kommt |
 
 ### Mandanten (mehrere Schulen auf einer Instanz)
 
@@ -460,7 +492,9 @@ Vibration bei geöffneter App bleiben.
 **Wann.** Bei einem Schüler auf dem Weg (an die aufnehmende Lehrkraft), beim
 Zurückschicken (an die abgebende) und beim Rückholwunsch (an die aufnehmende).
 Nimmt die abgebende Lehrkraft die Verweisung zurück, ersetzt „Verweisung
-zurückgenommen“ den Alarm zum selben Vorfall.
+zurückgenommen“ den Alarm zum selben Vorfall. Ist ein Schüler nach fünf
+Minuten nicht bestätigt, bekommen beide Seiten eine Benachrichtigung (siehe
+[Noch nicht angekommen](#noch-nicht-angekommen)).
 Nur wenn die Lehrkraft gerade **keine sichtbare Verbindung** hat – der Client
 meldet, ob die App im Vordergrund ist; sonst reicht das Overlay.
 
@@ -558,8 +592,8 @@ prüfen – über die öffentliche Adresse mit HTTPS, weil Push das braucht:
    einschalten, erlauben, bereit melden, Bildschirm sperren.
 3. Von einem dritten Gerät aus einen Schüler zu jedem der beiden schicken.
 4. Erwartet: Benachrichtigung „Schüler auf dem Weg zu dir“ auf dem gesperrten
-   Bildschirm, ohne Namen. Ein Tipp öffnet Auszeit mit „Schüler ist
-   angekommen“.
+   Bildschirm, ohne Namen. Ein Tipp öffnet Auszeit mit dem Overlay,
+   „Ist angekommen“ steht auf der Karte.
 5. Zurückschicken und Rückholwunsch genauso prüfen.
 
 ### Aufbewahrung
@@ -783,7 +817,7 @@ DENY`. Was das leistet:
 
 - **Kein Einrahmen.** Keine fremde Seite darf Auszeit in einem Rahmen zeigen
   (`frame-ancestors 'none'`). Sonst ließe sich eine Lehrkraft unter einer
-  harmlosen Oberfläche dazu bringen, „Schüler ist angekommen“ zu tippen.
+  harmlosen Oberfläche dazu bringen, „Ist angekommen“ zu tippen.
 - **Nur eigene Skripte und Stile** (`default-src 'self'`, kein
   `unsafe-inline`). Ein eingeschleuster Name, der doch einmal am Escaping
   vorbeikäme, liefe nicht als Skript. Deshalb stehen auch in `index.html`
