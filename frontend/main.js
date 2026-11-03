@@ -64,6 +64,7 @@ const btnUebernehmen = document.getElementById('btn-uebernehmen');
 const pushKarte = document.getElementById('push-karte');
 const pushStatus = document.getElementById('push-status');
 const btnPush = document.getElementById('btn-push');
+const btnPushTest = document.getElementById('btn-push-test');
 const pushHinweis = document.getElementById('push-hinweis');
 
 // Mandanten-Anzeige
@@ -556,12 +557,18 @@ function schluesselAlsBytes(base64) {
   return Uint8Array.from(roh, z => z.charCodeAt(0));
 }
 
-function zeigePush(status, { an = false, knopf = null, hinweis = '' } = {}) {
+function zeigePush(status, { an = false, gestoert = false, knopf = null, test = false, hinweis = '' } = {}) {
   pushKarte.classList.remove('hidden');
   pushStatus.textContent = status;
   pushStatus.classList.toggle('an', an);
+  pushStatus.classList.toggle('gestoert', gestoert);
   btnPush.classList.toggle('hidden', !knopf);
   if (knopf) btnPush.textContent = knopf;
+  btnPushTest.classList.toggle('hidden', !test);
+  zeigePushHinweis(hinweis);
+}
+
+function zeigePushHinweis(hinweis) {
   pushHinweis.textContent = hinweis;
   pushHinweis.classList.toggle('hidden', !hinweis);
 }
@@ -571,12 +578,39 @@ async function aktuellesAbo() {
   return registrierung.pushManager.getSubscription();
 }
 
+// Ein Abo gehoert zu dem Schluessel, mit dem es angelegt wurde. Hat der Server
+// inzwischen ein neues Schluesselpaar, nimmt der Push-Dienst fuer das alte Abo
+// nichts mehr an - und die App zeigte trotzdem "an".
+function passtZumServer(abo) {
+  const schluessel = abo.options && abo.options.applicationServerKey;
+  if (!schluessel) return true; // Aeltere Browser verraten ihn nicht.
+  const vorhanden = new Uint8Array(schluessel);
+  const erwartet = schluesselAlsBytes(pushSchluessel);
+  return vorhanden.length === erwartet.length && vorhanden.every((b, i) => b === erwartet[i]);
+}
+
+// Altes Abo kuendigen, neues anlegen. Die Erlaubnis besteht schon; verlangt
+// ein Browser trotzdem einen Tipp, schlaegt das fehl, und die Karte bietet
+// "Einschalten" an.
+async function aboErneuern() {
+  const alt = await aktuellesAbo();
+  if (alt) await alt.unsubscribe();
+  const registrierung = await navigator.serviceWorker.ready;
+  return registrierung.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: schluesselAlsBytes(pushSchluessel)
+  });
+}
+
+const PUSH_STOERUNG = 'Der Server erreicht den Benachrichtigungsdienst gerade nicht. Der Alarm kommt nur bei offener App – bitte der Administration melden.';
+
 // Stand anzeigen - und ein vorhandenes Abo an die aktuelle Sitzung haengen.
-// Nach jeder Anmeldung noetig: Das Abo endet mit der Sitzung.
+// Nach jeder Anmeldung noetig: Das Abo endet mit der Sitzung. Liefert, ob
+// Benachrichtigungen auf diesem Geraet an sind.
 async function pushStand() {
   if (!pushSchluessel || !currentUser) {
     pushKarte.classList.add('hidden');
-    return;
+    return false;
   }
   if (!pushMoeglich) {
     // iPhone und iPad koennen Benachrichtigungen nur fuer Apps auf dem
@@ -590,21 +624,31 @@ async function pushStand() {
         hinweis: 'Der Alarm kommt nur, solange Auszeit offen ist.'
       });
     }
-    return;
+    return false;
   }
   if (Notification.permission === 'denied') {
     zeigePush('Benachrichtigungen blockiert', {
       hinweis: 'In den Einstellungen dieser Website erlauben – sonst kommt der Alarm nur bei offener App.'
     });
-    return;
+    return false;
   }
   try {
-    const abo = await aktuellesAbo();
+    let abo = await aktuellesAbo();
     if (abo && Notification.permission === 'granted') {
-      const antwort = await socket.timeout(5000).emitWithAck('push_abo', abo.toJSON());
+      if (!passtZumServer(abo)) abo = await aboErneuern();
+      let antwort = await socket.timeout(5000).emitWithAck('push_abo', abo.toJSON());
+      // Der Push-Dienst hat dieses Abo abgelehnt oder vergessen - ein neues.
+      if (!antwort.ok && antwort.grund === 'erneuern') {
+        abo = await aboErneuern();
+        antwort = await socket.timeout(5000).emitWithAck('push_abo', abo.toJSON());
+      }
+      if (antwort.ok && antwort.stoerung) {
+        zeigePush('Benachrichtigungen gestört', { gestoert: true, knopf: 'Aus', test: true, hinweis: PUSH_STOERUNG });
+        return true;
+      }
       if (antwort.ok) {
-        zeigePush('Benachrichtigungen an – auch bei gesperrtem Bildschirm', { an: true, knopf: 'Aus' });
-        return;
+        zeigePush('Benachrichtigungen an – auch bei gesperrtem Bildschirm', { an: true, knopf: 'Aus', test: true });
+        return true;
       }
     }
   } catch (err) {
@@ -614,7 +658,45 @@ async function pushStand() {
     knopf: 'Einschalten',
     hinweis: 'Ohne sie kommt der Alarm nur, solange Auszeit offen ist.'
   });
+  return false;
 }
+
+// Selbsttest: eine Probe-Benachrichtigung an dieses Geraet. Der Server sagt,
+// ob er sie losbekommen hat - ob das Handy sie zeigt, sieht die Lehrkraft.
+const PUSH_TEST_ERGEBNIS = {
+  ok: 'Test verschickt – gleich erscheint „Auszeit erreicht dich“. Kommt nichts, hält das Handy die Benachrichtigung zurück: in den Einstellungen des Handys Mitteilungen für Auszeit bzw. den Browser erlauben und das Stromsparen für die App ausschalten.',
+  dienst_nicht_erreichbar: PUSH_STOERUNG,
+  zu_schnell: 'Bitte einen Moment warten und dann noch einmal testen.',
+  fehler: 'Der Benachrichtigungsdienst hat den Test gerade nicht angenommen. Bitte gleich noch einmal versuchen.'
+};
+
+btnPushTest.addEventListener('click', async () => {
+  btnPushTest.disabled = true;
+  try {
+    const abo = await aktuellesAbo();
+    const antwort = await socket.timeout(10000).emitWithAck('push_test', { endpoint: abo ? abo.endpoint : '' });
+    // Danach den Stand neu holen: Ein abgelehntes Abo wird dabei erneuert,
+    // eine Stoerung angezeigt oder aufgehoben.
+    const an = await pushStand();
+    if (antwort.ok) {
+      zeigePushHinweis(PUSH_TEST_ERGEBNIS.ok);
+    } else if (antwort.grund === 'erneuern') {
+      zeigePushHinweis(an
+        ? 'Die Benachrichtigungen waren veraltet und sind jetzt erneuert. Bitte noch einmal testen.'
+        : 'Die Benachrichtigungen waren veraltet. Bitte neu einschalten.');
+    } else if (antwort.grund === 'kein_abo') {
+      // pushStand hat das Abo eben an die Sitzung gehaengt - oder zeigt
+      // schon, warum es keines gibt.
+      if (an) zeigePushHinweis('Bitte noch einmal testen.');
+    } else {
+      zeigePushHinweis(PUSH_TEST_ERGEBNIS[antwort.grund] || PUSH_TEST_ERGEBNIS.fehler);
+    }
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  } finally {
+    btnPushTest.disabled = false;
+  }
+});
 
 btnPush.addEventListener('click', async () => {
   btnPush.disabled = true;

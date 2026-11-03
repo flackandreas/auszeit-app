@@ -105,8 +105,18 @@ const NACHRICHTEN = {
   zurueckgenommen: {
     titel: 'Verweisung zurückgenommen',
     text: 'Es kommt doch kein Schüler zu dir.'
+  },
+  // Der Selbsttest auf Knopfdruck.
+  test: {
+    titel: 'Auszeit erreicht dich',
+    text: 'Test: So meldet sich Auszeit, wenn ein Schüler zu dir kommt.'
   }
 };
+
+// Fehlercodes von Node, wenn der Dienst gar nicht erreichbar war: Name nicht
+// aufloesbar, Verbindung abgewiesen, Zeit abgelaufen. In der Schule heisst das
+// meist, dass eine Firewall ausgehendes HTTPS sperrt.
+const NETZFEHLER = /^E[A-Z_]+$/;
 
 // Der eigentliche Versand. Austauschbar, damit die Tests ohne Netz sehen,
 // was hinausginge.
@@ -129,8 +139,13 @@ function erstellePush(konfiguration) {
   };
 
   /**
-   * Schickt eine Nachricht an ein Abo. Liefert 'ok', 'weg' (der Dienst kennt
-   * das Abo nicht mehr - loeschen) oder 'fehler'.
+   * Schickt eine Nachricht an ein Abo. Liefert
+   *   'ok'
+   *   'weg'        der Dienst kennt das Abo nicht mehr (404, 410)
+   *   'abgelehnt'  der Dienst nimmt es mit unserem Schluessel nicht an (401,
+   *                403) - meist gehoert es zu einem frueheren Schluesselpaar
+   *   'netz'       der Dienst war nicht erreichbar
+   *   'fehler'     alles andere, etwa eine Stoerung beim Dienst
    *
    * @param thema  ersetzt beim Dienst eine noch nicht zugestellte Nachricht
    *               mit demselben Thema - etwa zweimal derselbe Vorfall.
@@ -146,6 +161,8 @@ function erstellePush(konfiguration) {
     } catch (err) {
       if (err.statusCode === 404 || err.statusCode === 410) return 'weg';
       console.error(`Push nicht zugestellt (${err.statusCode || err.code || err.message}).`);
+      if (err.statusCode === 401 || err.statusCode === 403) return 'abgelehnt';
+      if (!err.statusCode && NETZFEHLER.test(String(err.code || ''))) return 'netz';
       return 'fehler';
     }
   }

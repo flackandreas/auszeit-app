@@ -309,6 +309,16 @@ const push = PUSH.aktiv ? erstellePush(PUSH) : null;
 // Abos je Geraet, an einer Sitzung haengend. Ist die Sitzung vorbei, zaehlt
 // das Abo nicht mehr; das Aufraeumen nimmt es dann aus dem Speicher.
 const pushAbos = new Map(); // schluessel -> { sitzung, kennung, endpunkt, p256dh, auth }
+// Abos, die ein Push-Dienst nicht mehr kennt oder ablehnt. Der Browser haelt
+// sie trotzdem weiter fuer gueltig und meldet sie nach jeder Anmeldung wieder
+// an; dann soll er ein neues anlegen, statt das tote erneut einzutragen. Sonst
+// stuende in der App "Benachrichtigungen an", und es kaeme nie etwas.
+const abgelehnteAbos = new Set(); // schluessel
+// Erreicht der Server die Push-Dienste nicht - etwa weil eine Firewall
+// ausgehendes HTTPS sperrt -, soll die App das sagen. Der naechste
+// gelungene Versand hebt es auf.
+let pushStoerung = false;
+const PUSH_TEST_ABSTAND_MS = 5 * 1000;
 
 if (PUSH.fehlend.length > 0) {
   console.error(`Web Push unvollstaendig eingerichtet, es fehlt: ${PUSH.fehlend.join(', ')} - Benachrichtigungen sind aus.`);
@@ -815,14 +825,21 @@ function benachrichtige(teacherId, art, vorfall) {
   };
   for (const abo of pushAbos.values()) {
     if (abo.kennung !== teacherId || !sitzungen.gueltig(abo.sitzung)) continue;
-    push.sende(abo, nachricht, vorfall.id).then(ergebnis => {
-      // Der Dienst kennt das Abo nicht mehr - etwa weil die App vom
-      // Home-Bildschirm entfernt wurde.
-      if (ergebnis === 'weg') {
-        pushAbos.delete(abo.schluessel);
-        ablage.pushAboLoeschen(abo.schluessel);
-      }
-    });
+    push.sende(abo, nachricht, vorfall.id).then(ergebnis => verbucheVersand(abo, ergebnis));
+  }
+}
+
+// Was ein Versand ueber das Abo und den Weg nach draussen verraet.
+function verbucheVersand(abo, ergebnis) {
+  if (ergebnis === 'ok') pushStoerung = false;
+  if (ergebnis === 'netz') pushStoerung = true;
+  // Der Dienst kennt das Abo nicht mehr - etwa weil die App vom
+  // Home-Bildschirm entfernt wurde - oder lehnt es ab, weil es zu einem
+  // frueheren Schluessel des Servers gehoert. Beides wird nicht wieder gut.
+  if (ergebnis === 'weg' || ergebnis === 'abgelehnt') {
+    pushAbos.delete(abo.schluessel);
+    ablage.pushAboLoeschen(abo.schluessel);
+    abgelehnteAbos.add(abo.schluessel);
   }
 }
 
@@ -1266,11 +1283,40 @@ io.on('connection', (socket) => {
     if (!teacher || !socket.data.sitzung) return antwort({ ok: false, grund: 'nicht_angemeldet' });
     const abo = abonnementPruefen(data, push.dienste);
     if (!abo) return antwort({ ok: false, grund: 'ungueltig' });
+    if (abgelehnteAbos.has(aboSchluessel(abo.endpunkt))) return antwort({ ok: false, grund: 'erneuern' });
 
     const eintrag = { schluessel: aboSchluessel(abo.endpunkt), sitzung: socket.data.sitzung, kennung: teacher.id, ...abo };
     pushAbos.set(eintrag.schluessel, eintrag);
     ablage.pushAboSpeichern(eintrag);
-    antwort({ ok: true });
+    antwort({ ok: true, ...(pushStoerung ? { stoerung: true } : {}) });
+  });
+
+  // Probe-Benachrichtigung an genau dieses Geraet, auch bei offener App: Es
+  // geht um den Weg ueber den Push-Dienst. Die Antwort sagt, ob der Server sie
+  // losbekommen hat; ob das Handy sie zeigt, sieht die Lehrkraft selbst.
+  socket.on('push_test', async (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = aktuelleLehrkraft(socket);
+    if (!push) return antwort({ ok: false, grund: 'aus' });
+    const endpunkt = data && typeof data.endpoint === 'string' ? data.endpoint : '';
+    const abo = endpunkt ? pushAbos.get(aboSchluessel(endpunkt)) : undefined;
+    if (!teacher || !abo || abo.kennung !== teacher.id || abo.sitzung !== socket.data.sitzung) {
+      return antwort({ ok: false, grund: 'kein_abo' });
+    }
+    const jetzt = Date.now();
+    if (jetzt - (socket.data.letzterPushTest || 0) < PUSH_TEST_ABSTAND_MS) return antwort({ ok: false, grund: 'zu_schnell' });
+    socket.data.letzterPushTest = jetzt;
+
+    const ergebnis = await push.sende(abo, {
+      ...NACHRICHTEN.test,
+      art: 'test',
+      tag: 'auszeit-test',
+      ziel: adresseDerSchule(teacher.schulId)
+    });
+    verbucheVersand(abo, ergebnis);
+    if (ergebnis === 'ok') return antwort({ ok: true });
+    const grund = { weg: 'erneuern', abgelehnt: 'erneuern', netz: 'dienst_nicht_erreichbar' }[ergebnis] || 'fehler';
+    antwort({ ok: false, grund });
   });
 
   // Benachrichtigungen auf diesem Geraet aus.
