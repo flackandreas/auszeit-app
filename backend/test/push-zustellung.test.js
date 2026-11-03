@@ -212,6 +212,26 @@ test('Abos an fremde Adressen werden abgelehnt', async () => {
   assert.deepEqual(antwort, { ok: false, grund: 'ungueltig' });
 });
 
+test('Rueckgaengig ersetzt den Alarm auf dem gesperrten Bildschirm', async () => {
+  const ute = await lehrkraft('Ute Auf', { plaetze: 1, abo: geraet('ute') });
+  const veit = await lehrkraft('Veit Ab', { sichtbar: true });
+  const vorfall = await schicke(veit, ute.daten.id);
+  await kurz();
+  versendet.length = 0;
+
+  assert.deepEqual(await veit.client.emitWithAck('rueckgaengig', { incidentId: vorfall.id }), { ok: true });
+  await kurz();
+  assert.equal(versendet.length, 1);
+  const [push] = versendet;
+  assert.equal(push.adresse, geraet('ute').endpoint);
+  assert.equal(push.nachricht.titel, 'Verweisung zurückgenommen');
+  // Dieselbe Kennung wie der Alarm: Die Benachrichtigung wird ersetzt, und
+  // eine noch nicht zugestellte ersetzt schon der Push-Dienst.
+  assert.equal(push.nachricht.tag, vorfall.id);
+  assert.equal(push.optionen.topic, vorfall.id);
+  assert.ok(!JSON.stringify(push.nachricht).includes('Veit'));
+});
+
 test('Ein Abo uebersteht den Neustart', async () => {
   const mia = await lehrkraft('Mia Auf', { plaetze: 1, abo: geraet('mia') });
   for (const client of clients.splice(0)) client.close();

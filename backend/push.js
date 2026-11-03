@@ -100,6 +100,11 @@ const NACHRICHTEN = {
   rueckholwunsch: {
     titel: 'Rückholwunsch',
     text: 'Die abgebende Lehrkraft möchte den Schüler zurück.'
+  },
+  // Ersetzt den Alarm "kommt" zum selben Vorfall.
+  zurueckgenommen: {
+    titel: 'Verweisung zurückgenommen',
+    text: 'Es kommt doch kein Schüler zu dir.'
   }
 };
 

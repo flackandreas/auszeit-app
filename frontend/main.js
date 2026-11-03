@@ -139,10 +139,34 @@ function switchView(viewElement) {
   viewElement.classList.add('active-view');
 }
 
-function showToast(message) {
+// Eine neue Meldung ersetzt die laufende samt ihrer Zeit. Frueher blendete der
+// Zeitgeber der alten Meldung die neue vorzeitig aus.
+let toastZeit = null;
+
+function versteckeToast() {
+  clearTimeout(toastZeit);
+  toast.classList.remove('show', 'mit-knopf');
+}
+
+// Wahlweise mit einem Knopf, etwa "Rueckgaengig" - dann nimmt die Meldung
+// Tipps an und steht so lange wie angegeben.
+function showToast(message, { knopf = null, dauer = 3000 } = {}) {
+  clearTimeout(toastZeit);
   toast.textContent = message;
+  toast.classList.toggle('mit-knopf', Boolean(knopf));
+  if (knopf) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-knopf';
+    btn.textContent = knopf.label;
+    btn.addEventListener('click', () => {
+      versteckeToast();
+      knopf.beimTippen();
+    });
+    toast.appendChild(btn);
+  }
   toast.classList.add('show');
-  setTimeout(() => toast.classList.remove('show'), 3000);
+  toastZeit = setTimeout(versteckeToast, dauer);
 }
 
 // Namen kommen von anderen Lehrkraeften und landen in innerHTML.
@@ -920,6 +944,17 @@ function meldeRueckkehr(incident) {
 socket.on('incoming_student', meldeAnkunft);
 socket.on('student_returning', meldeRueckkehr);
 
+// Die Gegenseite hat sich vertippt und die Verweisung gleich zurueckgenommen.
+// Das Overlay dazu muss weg - im Abgleich fehlt der Vorfall zwar, aber ein
+// Overlay ohne Vorfall laesst raeumeOverlayAuf bewusst stehen.
+socket.on('verweisung_zurueckgenommen', ({ incidentId, senderName }) => {
+  const warVorn = overlayQueue.length > 0 && overlayQueue[0].incidentId === incidentId;
+  overlayQueue = overlayQueue.filter(e => e.incidentId !== incidentId);
+  if (warVorn) naechstesOverlay();
+  showToast(`${senderName} hat die Verweisung zurückgenommen – es kommt kein Schüler.`, { dauer: 6000 });
+  if (navigator.vibrate) navigator.vibrate(120);
+});
+
 // Schon bestaetigt, aber vom Server noch nicht zurueckgemeldet: nicht erneut
 // als offene Meldung zeigen.
 const bestaetigt = new Set();
@@ -939,7 +974,14 @@ function holeOffeneMeldungenNach() {
 
 socket.on('help_requested', (response) => {
   if (response.success) {
-    showToast(`Schüler auf dem Weg zu ${response.incident.receiverName}`);
+    // Die Wahl merken: Nach "Rueckgaengig" steht sie wieder da, und der
+    // Fehltipp auf die falsche Kollegin ist mit einem Tipp korrigiert.
+    const wahl = { gewaehlt, studentName: inputStudentName.value };
+    const incident = response.incident;
+    showToast(`Schüler auf dem Weg zu ${incident.receiverName}`, {
+      knopf: { label: 'Rückgängig', beimTippen: () => nimmZurueck(incident, wahl) },
+      dauer: response.rueckgaengigMs || 3000
+    });
     inputStudentName.value = '';
     auswahlZuruecksetzen();
     switchView(dashboardView);
@@ -947,6 +989,36 @@ socket.on('help_requested', (response) => {
     showToast(response.message || 'Fehler beim Senden.');
   }
 });
+
+async function nimmZurueck(incident, wahl) {
+  let antwort;
+  try {
+    antwort = await socket.timeout(5000).emitWithAck('rueckgaengig', { incidentId: incident.id });
+  } catch (err) {
+    showToast(`Keine Verbindung – bitte direkt mit ${incident.receiverName} klären.`, { dauer: 6000 });
+    return;
+  }
+  if (!antwort.ok) {
+    const grund = {
+      angekommen: `${schuelerName(incident)} ist schon bei ${incident.receiverName} angekommen.`,
+      zu_spaet: `Zu spät zum Zurücknehmen – bitte direkt mit ${incident.receiverName} klären.`
+    }[antwort.grund] || 'Diese Verweisung gibt es nicht mehr.';
+    showToast(grund, { dauer: 6000 });
+    return;
+  }
+  // Zurueck in die Auswahl, mit demselben Schueler: Meist war nur die
+  // Kollegin falsch.
+  inputStudentName.value = wahl.studentName;
+  if (wahl.gewaehlt === 'ohne') {
+    gewaehlt = 'ohne';
+  } else if (wahl.gewaehlt) {
+    gewaehlt = schuelerliste.find(s => s.kennung === wahl.gewaehlt.kennung) || null;
+    if (gewaehlt) aktiveKlasse = gewaehlt.klasse;
+  }
+  zeichneAuswahl();
+  switchView(emergencyView);
+  showToast('Verweisung zurückgenommen.');
+}
 
 socket.on('student_arrived', (incident) => {
   showToast(`${schuelerName(incident)} ist sicher bei ${incident.receiverName} angekommen.`);
@@ -1132,7 +1204,7 @@ function renderTeachersList() {
         <span class="t-name">${escapeHtml(teacher.name)}</span>
         <span class="t-room">Raum ${escapeHtml(teacher.room)}</span>
       </div>
-      <div class="t-cap">${teacher.capacity} Platz</div>
+      <div class="t-cap">${teacher.capacity} ${teacher.capacity === 1 ? 'Platz' : 'Plätze'}</div>
     `;
 
     el.addEventListener('click', () => {
@@ -1287,7 +1359,7 @@ function raumUebernehmen() {
   if (!neu || !currentUser || neu === currentUser.room) return;
 
   currentUser.room = neu;
-  displayRoom.textContent = `Raum `;
+  displayRoom.textContent = `Raum ${neu}`;
   localStorage.setItem(sitzungsSchluessel(), JSON.stringify({ name: currentUser.name, room: neu }));
   updateStatusOnServer();
 }

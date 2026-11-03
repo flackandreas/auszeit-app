@@ -8,11 +8,12 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 
 - **Schnellanmeldung & Raumeingabe**: Lehrkräfte melden sich mit ihrem Namen/Kürzel und ihrem aktuellen Raum an. Ein geheimes Sitzungstoken bringt sie nach Verbindungsabbrüchen still in ihre Sitzung zurück (siehe [Identität und Sitzung](#identität-und-sitzung)).
 - **Anmeldung über das SchulOS-Portal**: Hängt Auszeit am Portal, kommen Name und Kürzel von dort – ohne zweites Passwort. Gefragt wird nur noch der Raum (siehe [Anmeldung über das SchulOS-Portal](#anmeldung-über-das-schulos-portal)).
-- **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3+). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
+- **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
   - Im Schulbetrieb Auswahl aus der Schülerliste: Klasse ist vorausgewählt, Schüler antippen, Kollegin antippen – zwei Tipps (siehe [Schülerliste](#schülerliste)). Ohne Portal und bei Demo-Mandanten ein freies Namensfeld.
   - Direktes Absenden der Auszeit-Anforderung per Klick.
+  - **Rückgängig**: Zehn Sekunden lang lässt sich ein Fehltipp zurücknehmen, solange der Schüler nicht angekommen ist (siehe [Rückgängig](#rückgängig)).
 - **Benachrichtigungen (Web Push)**: Auch bei gesperrtem Bildschirm kommt der Alarm aufs Handy – ohne Schülernamen. Auf iPhone und iPad, sobald Auszeit auf dem Home-Bildschirm liegt (siehe [Benachrichtigungen](#benachrichtigungen)).
 - **Sofort-Benachrichtigung & Ankunftsbestätigung**:
   - Die aufnehmende Lehrkraft erhält umgehend ein hervorgehobenes Overlay ("Schüler auf dem Weg!") mit optischem Signal und Gerätevibration.
@@ -178,7 +179,9 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
 | `request_help` | Client ➔ Server | Startet eine Auszeit. Der Platz wird sofort belegt, nicht erst bei der Ankunft. Im Schulbetrieb mit `schuelerKennung` aus der Liste (ein Freitext wird dort verworfen), sonst mit `studentName`. |
-| `help_requested` | Server ➔ Sender | Rückmeldung, ob die Verweisung angenommen wurde. |
+| `help_requested` | Server ➔ Sender | Rückmeldung, ob die Verweisung angenommen wurde, dazu `rueckgaengigMs`: so lange zeigt der Client „Rückgängig“. |
+| `rueckgaengig` | Sender ➔ Server (mit Rückmeldung) | Nimmt eine Verweisung kurz nach dem Absenden zurück. Abgelehnt mit `angekommen`, `zu_spaet` oder `unbekannt`. |
+| `verweisung_zurueckgenommen` | Server ➔ Empfänger | Die Verweisung wurde zurückgenommen; das Overlay dazu verschwindet. |
 | `incoming_student` | Server ➔ Empfänger | Benachrichtigt über den Schüler auf dem Weg. |
 | `confirm_arrival` | Empfänger ➔ Server | Bestätigt das Eintreffen; Vorfall geht auf `betreut`. |
 | `student_arrived` | Server ➔ Sender | Benachrichtigt über das Eintreffen. |
@@ -210,12 +213,40 @@ eintrifft. Jeder Übergang ist idempotent — ein zweiter Klick dreht nichts wei
                        zurueck <--confirm_return-- auf_dem_rueckweg
 ```
 
+Vor der Ankunft kann die abgebende Lehrkraft eine Verweisung kurz nach dem
+Absenden zurücknehmen (`rueckgaengig`). Das ist kein Zustand: Der Vorfall
+verschwindet ganz (siehe [Rückgängig](#rückgängig)).
+
 Daneben steht `abgebrochen`: der einseitige Abschluss, aus jedem offenen Zustand
 heraus erreichbar, sobald die Gegenseite offline ist. Bewusst ein eigener
 Endzustand — `zurueck` würde behaupten, die Rückkehr sei bestätigt worden.
 
 `request_return` setzt nur das Kennzeichen `rueckholwunsch` am Vorfall und
 verändert den Zustand nicht.
+
+### Rückgängig
+
+Ein Tipp auf die Kollegin schickt den Schüler sofort los – zwei Tipps mitten in
+der Stunde sollen genügen. Der Preis ist der Fehltipp auf die falsche Kollegin.
+Deshalb steht nach dem Absenden zehn Sekunden lang „Rückgängig“ in der
+Meldung am unteren Rand.
+
+- Erlaubt nur der abgebenden Lehrkraft und nur, solange der Schüler nicht als
+  angekommen bestätigt ist. Danach heißt es: direkt mit der Kollegin klären.
+- Der Vorfall verschwindet ganz, auch aus der Datenbank. Ein Fehltipp ist keine
+  Auszeit und soll die Auswertung nicht verfälschen. Der Platz ist sofort frei.
+- Die aufnehmende Lehrkraft sieht „… hat die Verweisung zurückgenommen“, ihr
+  Overlay verschwindet. Bei gesperrtem Bildschirm ersetzt eine Benachrichtigung
+  „Verweisung zurückgenommen“ den Alarm.
+- Die abgebende Lehrkraft landet wieder in der Auswahl, derselbe Schüler ist
+  gewählt: Meist war nur die Kollegin falsch.
+- Bewusst kurz: Nach ein paar Sekunden ist der Schüler unterwegs. Der Server
+  lässt die Hälfte der Zeit obendrauf gelten, damit ein Tipp in der letzten
+  Sekunde nicht an der Laufzeit im WLAN scheitert.
+
+| Variable | Vorgabe | Bedeutung |
+| :--- | :--- | :--- |
+| `AUSZEIT_RUECKGAENGIG_MS` | 10 s | Wie lange „Rückgängig“ angeboten wird |
 
 ### Mandanten (mehrere Schulen auf einer Instanz)
 
@@ -427,6 +458,8 @@ Vibration bei geöffneter App bleiben.
 
 **Wann.** Bei einem Schüler auf dem Weg (an die aufnehmende Lehrkraft), beim
 Zurückschicken (an die abgebende) und beim Rückholwunsch (an die aufnehmende).
+Nimmt die abgebende Lehrkraft die Verweisung zurück, ersetzt „Verweisung
+zurückgenommen“ den Alarm zum selben Vorfall.
 Nur wenn die Lehrkraft gerade **keine sichtbare Verbindung** hat – der Client
 meldet, ob die App im Vordergrund ist; sonst reicht das Overlay.
 
@@ -713,6 +746,29 @@ Die Adresse des Anfragenden wertet Auszeit nirgends aus.
 
 Die Rolle „Verwaltung“ (`PORTAL_ADMIN_GRUPPEN`) wird bei jeder Anmeldung aus
 dem Portal übernommen und für den Import der Schülerliste gebraucht.
+
+### Sicherheitsköpfe
+
+Jede Antwort der App trägt eine Content-Security-Policy und `X-Frame-Options:
+DENY`. Was das leistet:
+
+- **Kein Einrahmen.** Keine fremde Seite darf Auszeit in einem Rahmen zeigen
+  (`frame-ancestors 'none'`). Sonst ließe sich eine Lehrkraft unter einer
+  harmlosen Oberfläche dazu bringen, „Schüler ist angekommen“ zu tippen.
+- **Nur eigene Skripte und Stile** (`default-src 'self'`, kein
+  `unsafe-inline`). Ein eingeschleuster Name, der doch einmal am Escaping
+  vorbeikäme, liefe nicht als Skript. Deshalb stehen auch in `index.html`
+  keine `style`-Attribute.
+- Dazu `X-Content-Type-Options: nosniff` und `Referrer-Policy: same-origin`.
+
+Drei Stellen haben eine eigene Richtlinie: die **Fehlerseite** der
+Portal-Anmeldung (Stil im Dokument, kein Skript), **`/sso/abmelden`** (nur das
+Portal darf sie einrahmen, deshalb dort ohne `X-Frame-Options`) und die
+**Verwaltung** (ihr Skript steht im Dokument und ist über seinen Hash erlaubt,
+den der Server beim Start aus `admin.html` berechnet).
+
+`form-action` fehlt mit Absicht: Der Abmeldeknopf schickt ein Formular, das zum
+Portal weiterleitet, und Chrome prüft auch das Ziel einer Weiterleitung.
 
 ---
 
