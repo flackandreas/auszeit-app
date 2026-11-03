@@ -844,5 +844,7 @@ a.btn { text-decoration: none; }
 .push-zeile { display: flex; justify-content: space-between; align-items: center; gap: 0.75rem; }
 .push-status { font-size: 0.9rem; font-weight: 600; }
 .push-status.an { color: #047857; }
+.push-status.gestoert { color: var(--danger-hover); }
+.push-knoepfe { display: flex; gap: 0.5rem; flex: 0 0 auto; }
 .push-karte .btn-klein { width: auto; flex: 0 0 auto; }
 .btn-klein.hidden { display: none; }

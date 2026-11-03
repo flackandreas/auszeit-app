@@ -194,7 +194,8 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `return_requested` | Server ➔ Empfänger | Zeigt den Rückholwunsch an. |
 | `close_incident` | Client ➔ Server | Einseitiger Abschluss; nur zulässig, solange die Gegenseite offline ist. |
 | `sichtbarkeit` | Client ➔ Server | Ob die App gerade im Vordergrund ist. Nur ohne sichtbare Verbindung gibt es eine Benachrichtigung. |
-| `push_abo` | Client ➔ Server (mit Rückmeldung) | Hängt das Push-Abo dieses Geräts an die laufende Sitzung. |
+| `push_abo` | Client ➔ Server (mit Rückmeldung) | Hängt das Push-Abo dieses Geräts an die laufende Sitzung. `grund: 'erneuern'`: Der Dienst hat dieses Abo abgelehnt, der Browser soll ein neues anlegen. `stoerung: true`: Der Server erreicht die Push-Dienste gerade nicht. |
+| `push_test` | Client ➔ Server (mit Rückmeldung) | Probe-Benachrichtigung an dieses Gerät. Abgelehnt mit `erneuern`, `dienst_nicht_erreichbar`, `fehler`, `zu_schnell` oder `kein_abo`. |
 | `push_abmelden` | Client ➔ Server (mit Rückmeldung) | Benachrichtigungen auf diesem Gerät aus. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
 | `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. |
@@ -486,6 +487,34 @@ Sitzung**: Abmelden, Abmeldung im Portal oder Ablauf der Sitzung beenden es;
 beim Abmelden kündigt auch der Browser es. Auf einem Raum-PC bekommt so
 niemand die Alarme der Person vor ihm. Meldet der Push-Dienst ein Abo als
 erloschen (404/410), verschwindet es.
+
+**Ehrlicher Stand statt „an“.** Früher zeigte die Karte „Benachrichtigungen an“,
+sobald der Browser ein Abo hatte – auch wenn nie etwas ankam. Jetzt:
+
+- **Abgelehnte Abos werden erneuert.** Ein Abo gehört zu dem Schlüsselpaar, mit
+  dem es angelegt wurde. Wurden die VAPID-Schlüssel danach neu erzeugt, lehnt
+  der Push-Dienst ab (401/403). Der Browser merkt davon nichts und meldet das
+  tote Abo nach jeder Anmeldung wieder an. Deshalb: Passt der Schlüssel des Abos
+  nicht zu dem des Servers, legt die App gleich ein neues an. Hat ein Dienst ein
+  Abo abgelehnt oder vergessen (401/403/404/410), trägt der Server es nicht
+  wieder ein (`grund: 'erneuern'`), und die App legt ein neues an. Klappt das
+  ohne Tipp nicht, steht „Benachrichtigungen aus – Einschalten“ da.
+- **Störung nach draußen.** Erreicht der Server die Push-Dienste nicht – in der
+  Schule meist eine Firewall, die ausgehendes HTTPS sperrt –, zeigt die Karte
+  „Benachrichtigungen gestört“ mit der Bitte, die Administration zu
+  informieren. Der nächste gelungene Versand hebt das auf.
+
+**Selbsttest.** Ist die Benachrichtigung an, steht daneben „Test“: Der Server
+schickt sofort eine Probe („Auszeit erreicht dich“) an genau dieses Gerät, auch
+bei offener App. Die App sagt, ob der Server sie losbekommen hat oder woran es
+hängt (Abo veraltet, Dienst nicht erreichbar, Störung beim Dienst). Kommt die
+Probe nicht an, obwohl der Server sie losbekommen hat, hält das Handy sie
+zurück – dann liegt es an den Mitteilungen oder am Stromsparen des Geräts.
+Höchstens ein Test alle fünf Sekunden.
+
+Ob das Handy dabei **vibriert**, entscheidet das Gerät: Lautlos-Modus, Fokus
+bzw. „Bitte nicht stören“ und die Mitteilungseinstellungen für Auszeit oder den
+Browser. Das Vibrationsmuster der Benachrichtigung ist nur ein Wunsch.
 
 **iPhone und iPad** können Benachrichtigungen nur für Apps auf dem
 Home-Bildschirm (ab iOS 16.4). Erkennt Auszeit ein iPhone oder iPad im

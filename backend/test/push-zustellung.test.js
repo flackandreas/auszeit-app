@@ -232,6 +232,70 @@ test('Rueckgaengig ersetzt den Alarm auf dem gesperrten Bildschirm', async () =>
   assert.ok(!JSON.stringify(push.nachricht).includes('Veit'));
 });
 
+test('Der Selbsttest geht an genau dieses Geraet, auch bei offener App', async () => {
+  const wolf = await lehrkraft('Wolf Test', { abo: geraet('wolf'), sichtbar: true });
+  await lehrkraft('Xenia Andere', { abo: geraet('xenia') });
+  versendet.length = 0;
+
+  assert.deepEqual(await wolf.client.emitWithAck('push_test', { endpoint: geraet('wolf').endpoint }), { ok: true });
+  assert.deepEqual(versendet.map(p => [p.adresse, p.nachricht.titel]), [[geraet('wolf').endpoint, 'Auszeit erreicht dich']]);
+  assert.ok(!JSON.stringify(versendet[0].nachricht).includes('Wolf'));
+
+  // Nicht im Sekundentakt - und nur an das eigene Geraet.
+  assert.deepEqual(await wolf.client.emitWithAck('push_test', { endpoint: geraet('wolf').endpoint }), { ok: false, grund: 'zu_schnell' });
+  assert.deepEqual(await wolf.client.emitWithAck('push_test', { endpoint: geraet('xenia').endpoint }), { ok: false, grund: 'kein_abo' });
+  assert.equal(versendet.length, 1);
+});
+
+test('Lehnt der Dienst ein Abo ab, muss der Browser ein neues anlegen', async () => {
+  const yara = await lehrkraft('Yara Auf', { plaetze: 1, abo: geraet('yara-alt') });
+  const zeno = await lehrkraft('Zeno Ab');
+  // Das Abo gehoert zu einem frueheren Schluessel des Servers.
+  antworten.set(geraet('yara-alt').endpoint, Object.assign(new Error('Forbidden'), { statusCode: 403 }));
+  versendet.length = 0;
+  await schicke(zeno, yara.daten.id);
+  await kurz();
+  assert.equal(versendet.length, 1);
+  await testserver.instanz.ablage.leeren();
+  assert.ok(!testserver.instanz.ablage.inhalt().pushAbos.some(a => a.endpunkt === geraet('yara-alt').endpoint),
+    'das abgelehnte Abo steht noch in der Ablage');
+
+  // Nach der naechsten Anmeldung zeigt der Browser dasselbe tote Abo vor.
+  // Eingetragen wird es nicht wieder, sonst stuende in der App "an".
+  assert.deepEqual(await yara.client.emitWithAck('push_abo', geraet('yara-alt')), { ok: false, grund: 'erneuern' });
+  assert.deepEqual(await yara.client.emitWithAck('push_abo', geraet('yara-neu')), { ok: true });
+});
+
+test('Der Selbsttest sagt, woran es haengt', async () => {
+  const arne = await lehrkraft('Arne Test', { abo: geraet('arne') });
+  const bea = await lehrkraft('Bea Test', { abo: geraet('bea') });
+  const cem = await lehrkraft('Cem Test', { abo: geraet('cem') });
+
+  // Abgelehnt: Das Abo muss neu angelegt werden.
+  antworten.set(geraet('arne').endpoint, Object.assign(new Error('Forbidden'), { statusCode: 403 }));
+  assert.deepEqual(await arne.client.emitWithAck('push_test', { endpoint: geraet('arne').endpoint }), { ok: false, grund: 'erneuern' });
+
+  // Nicht erreichbar, etwa wegen einer Firewall: Bis wieder ein Versand
+  // gelingt, sagt die App "gestoert" statt "an".
+  antworten.set(geraet('bea').endpoint, Object.assign(new Error('connect ETIMEDOUT'), { code: 'ETIMEDOUT' }));
+  assert.deepEqual(await bea.client.emitWithAck('push_test', { endpoint: geraet('bea').endpoint }),
+    { ok: false, grund: 'dienst_nicht_erreichbar' });
+  assert.ok(testserver.fehler.some(z => z.includes('Push nicht zugestellt (ETIMEDOUT)')), 'kein Hinweis im Log');
+  assert.deepEqual(await bea.client.emitWithAck('push_abo', geraet('bea')), { ok: true, stoerung: true });
+
+  // Eine Stoerung beim Dienst selbst ist keine Stoerung des Weges nach draussen.
+  antworten.set(geraet('cem').endpoint, Object.assign(new Error('Service Unavailable'), { statusCode: 503 }));
+  assert.deepEqual(await cem.client.emitWithAck('push_test', { endpoint: geraet('cem').endpoint }), { ok: false, grund: 'fehler' });
+
+  antworten.delete(geraet('cem').endpoint);
+  const neuerTab = await tab(testserver.adresse, { sammlung: clients });
+  const da = warteAuf(neuerTab, 'login_success');
+  neuerTab.emit('login', { schulId: '', token: cem.daten.token, room: '1' });
+  await da;
+  assert.deepEqual(await neuerTab.emitWithAck('push_test', { endpoint: geraet('cem').endpoint }), { ok: true });
+  assert.deepEqual(await bea.client.emitWithAck('push_abo', geraet('bea')), { ok: true });
+});
+
 test('Ein Abo uebersteht den Neustart', async () => {
   const mia = await lehrkraft('Mia Auf', { plaetze: 1, abo: geraet('mia') });
   for (const client of clients.splice(0)) client.close();
