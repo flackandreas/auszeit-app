@@ -301,7 +301,13 @@ async function portalSitzungLaden() {
   if (!portalAktiv) return;
   try {
     const antwort = await fetch('/api/sitzung', { cache: 'no-store' });
-    if (antwort.ok) portalIch = await antwort.json();
+    if (antwort.ok) {
+      portalIch = await antwort.json();
+    } else if ((await antwort.json().catch(() => ({}))).fehler === 'stundenende') {
+      // Der Tab war zum Stundenende zu. Bevor hier irgendwer neu anmeldet,
+      // muss der Browser beim Portal abgemeldet werden.
+      amStundenendeAbmelden(true);
+    }
   } catch (err) {
     console.warn('Portalsitzung nicht abrufbar:', err);
   }
@@ -577,6 +583,78 @@ const istIos = /iPad|iPhone|iPod/.test(navigator.userAgent)
   || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const alsApp = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 const pushMoeglich = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+
+// --- Abmeldung zum Stundenende am Raum-PC ---
+//
+// Ein Browser am PC kann ein Raum-PC sein, an dem nach dem Klingeln die
+// naechste Klasse sitzt. Dort endet die Sitzung mit der Stunde. Handy, Tablet
+// und die installierte App gehoeren einer Person und bleiben angemeldet - wer
+// Auszeit am eigenen Laptop nutzt, installiert es deshalb als App.
+const geteiltesGeraet = !alsApp && !istIos && !/Android/i.test(navigator.userAgent);
+
+// Den Zeitpunkt legt der Server fest, und er meldet auch selbst ab. Die Seite
+// warnt vorher und bietet an, eine Stunde dranzuhaengen.
+const VORWARNUNG_MS = 3 * 60 * 1000;
+// Kommt die Abmeldung des Servers nicht an - etwa weil das WLAN gerade weg
+// ist -, raeumt die Seite selbst ab. Die Vorfaelle sollen nicht fuer die
+// naechste Klasse stehen bleiben.
+const NACHFRIST_MS = 60 * 1000;
+let abmeldenUm = null;
+let vorwarnung = null;
+let selbstAbmelden = null;
+
+function planeAbmeldung(zeitpunkt) {
+  clearTimeout(vorwarnung);
+  clearTimeout(selbstAbmelden);
+  abmeldenUm = zeitpunkt || null;
+  if (!abmeldenUm) return;
+  const rest = abmeldenUm - Date.now();
+  vorwarnung = setTimeout(warneVorAbmeldung, Math.max(0, rest - VORWARNUNG_MS));
+  selbstAbmelden = setTimeout(() => {
+    if (currentUser) amStundenendeAbmelden(Boolean(portalIch));
+  }, Math.max(0, rest + NACHFRIST_MS));
+}
+
+function warneVorAbmeldung() {
+  if (!currentUser || !abmeldenUm) return;
+  showToast(`Stundenende – um ${uhrzeit(abmeldenUm)} wird dieser PC abgemeldet.`, {
+    knopf: { label: 'Angemeldet bleiben', beimTippen: angemeldetBleiben },
+    dauer: Math.max(0, abmeldenUm - Date.now())
+  });
+}
+
+async function angemeldetBleiben() {
+  try {
+    const antwort = await socket.timeout(5000).emitWithAck('angemeldet_bleiben', {});
+    if (antwort.ok) showToast(`Angemeldet bis ${uhrzeit(antwort.abmeldenUm)}.`);
+  } catch (err) {
+    showToast('Keine Antwort vom Server.');
+  }
+}
+
+// Wie der Abmeldeknopf, nur ohne dass jemand drueckt. Ueber das Portal geht es
+// weiter zu dessen Abmeldung - sonst kaeme der naechste Schueler mit einem
+// Klick auf die Kachel ohne Passwort als die Lehrkraft herein.
+function amStundenendeAbmelden(ueberPortal) {
+  planeAbmeldung(null);
+  localStorage.removeItem(tokenSchluessel());
+  // Auch den Namen: Er soll nicht fuer die naechste Person in der Maske
+  // stehen, und mit ihm meldete die Seite sonst gleich wieder still an.
+  localStorage.removeItem(sitzungsSchluessel());
+  inputName.value = '';
+  // Das Abo nicht ewig abwarten: Haengt der Service Worker, muss die
+  // Abmeldung trotzdem durch.
+  const aboBeendet = Promise.race([pushAufGeraetBeenden(), new Promise(r => setTimeout(r, 3000))]);
+  if (ueberPortal) {
+    // Die Rueckkehr vom Portal ist kein Kreislauf: Danach kennt der Server
+    // die Sitzung nicht mehr, und die Seite geht normal zur Anmeldung.
+    try { sessionStorage.removeItem(UMLEITUNG); } catch (err) { /* nichts zu tun */ }
+    aboBeendet.finally(() => abmeldeFormular.submit());
+    return;
+  }
+  zurAnmeldung();
+  showToast('Zum Stundenende abgemeldet.');
+}
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch(err => console.warn('Service Worker nicht registriert:', err));
@@ -874,7 +952,7 @@ socket.on('connect', async () => {
   // Fehlt beim ersten Mal noch der Raum, bleibt es bei der Maske.
   if (portalIch) {
     const raum = inputRoom.value.trim() || portalIch.raum;
-    if (raum) socket.emit('login', { portal: true, schulId: SCHULCODE, room: raum });
+    if (raum) socket.emit('login', { portal: true, schulId: SCHULCODE, room: raum, geteilt: geteiltesGeraet });
     return;
   }
   if (nurPortal) return;
@@ -884,7 +962,7 @@ socket.on('connect', async () => {
   // sie mit, falls er waehrend des Abbruchs geaendert wurde.
   const token = localStorage.getItem(tokenSchluessel());
   if (token) {
-    socket.emit('login', { token, schulId: SCHULCODE, room: gespeichert ? gespeichert.room : '' });
+    socket.emit('login', { token, schulId: SCHULCODE, room: gespeichert ? gespeichert.room : '', geteilt: geteiltesGeraet });
     return;
   }
 
@@ -900,6 +978,13 @@ socket.on('login_failed', (antwort) => {
   const grund = antwort && antwort.grund;
   // Ein abgewiesenes Token taugt nicht mehr, gleich aus welchem Grund.
   localStorage.removeItem(tokenSchluessel());
+
+  // Das Stundenende kam, waehrend dieser Tab keine Verbindung hatte - der
+  // Rechner schlief, oder das WLAN war weg.
+  if (grund === 'stundenende') {
+    amStundenendeAbmelden(Boolean(portalIch));
+    return;
+  }
 
   if (grund === 'portal_sitzung_fehlt') {
     // Abgelaufen, im Portal abgemeldet oder der Server wurde neu gestartet.
@@ -983,6 +1068,7 @@ socket.on('login_success', (antwort) => {
   zeichneAuswahl();
   meldeSichtbarkeit();
   pushStand();
+  planeAbmeldung(user.abmeldenUm);
 
   // Nach einem Reconnect nicht aus der Ansicht reissen, in der die Lehrkraft
   // gerade arbeitet.
@@ -992,7 +1078,14 @@ socket.on('login_success', (antwort) => {
 // Ein anderer Tab dieser Sitzung hat sich abgemeldet - das Token ist damit
 // widerrufen. Dieser Tab darf nicht angemeldet weiterlaufen. Den Browser hat
 // der andere Tab schon aufgeraeumt.
-socket.on('logged_out', async () => {
+//
+// Zum Stundenende kommt die Abmeldung vom Server selbst; dann geht es wie beim
+// Abmeldeknopf weiter, ueber das Portal.
+socket.on('logged_out', async (daten) => {
+  if (daten && daten.grund === 'stundenende') {
+    amStundenendeAbmelden(Boolean(portalIch));
+    return;
+  }
   pushAufGeraetBeenden();
   // Kam die Abmeldung aus dem Portal, hat in diesem Browser niemand
   // aufgeraeumt. Der Name der Lehrkraft soll auf einem Raum-PC nicht fuer
@@ -1007,6 +1100,10 @@ socket.on('logged_out', async () => {
   await portalSitzungLaden();
   zeigeAnmeldeweg();
 });
+
+// "Angemeldet bleiben" in einem anderen Tab, oder die Lehrkraft hat sich fuer
+// die Doppelstunde bereit gemeldet.
+socket.on('abmeldung_um', (daten) => planeAbmeldung(daten && daten.abmeldenUm));
 
 // Der Server ist die Wahrheit ueber Aufnahmebereitschaft und Plaetze, nicht
 // der Schalter im Browser. Frueher lief beides auseinander, sobald der Server
@@ -1423,7 +1520,7 @@ function anmelden() {
   const name = inputName.value.trim();
   const room = inputRoom.value.trim();
   if (portalIch) {
-    if (room) socket.emit('login', { portal: true, schulId: SCHULCODE, room });
+    if (room) socket.emit('login', { portal: true, schulId: SCHULCODE, room, geteilt: geteiltesGeraet });
     else showToast('Bitte den Raum eingeben.');
     return;
   }
@@ -1432,7 +1529,7 @@ function anmelden() {
     // Verbindungsabbruch hinweg. Danach vergisst ihn die Seite.
     const pin = inputPin.value.trim();
     if (pin) anmeldePin = pin;
-    socket.emit('login', { schulId: SCHULCODE, pin: anmeldePin, name, room });
+    socket.emit('login', { schulId: SCHULCODE, pin: anmeldePin, name, room, geteilt: geteiltesGeraet });
   } else {
     showToast('Bitte Name und Raum eingeben.');
   }
@@ -1451,6 +1548,7 @@ function zuruecksetzen() {
   btnEinstellungen.classList.add('hidden');
   hinweisNiemand = '';
   meinBereitBis = null;
+  planeAbmeldung(null);
   raumFrageOffen = false;
   bereitFrage.classList.add('hidden');
   pushKarte.classList.add('hidden');

@@ -395,9 +395,10 @@ const RUECKGAENGIG_FRIST_MS = RUECKGAENGIG_MS * 1.5;
 // fuenf lassen Luft fuer Treppenhaus und Toilette, ohne dass ein Kind eine
 // halbe Stunde unbemerkt fehlt.
 const UEBERFAELLIG_NACH_MS = dauerAusUmgebung('AUSZEIT_UEBERFAELLIG_MS', 5 * 60 * 1000);
-// So oft sieht der Server nach ueberfaelligen Schuelern und abgelaufener
-// Bereitschaft. Eine Viertelminute spaeter ist fuer beides nicht zu spaet, und
-// es braucht keinen Zeitgeber je Vorfall, der einen Neustart nicht ueberlebte.
+// So oft sieht der Server nach ueberfaelligen Schuelern, abgelaufener
+// Bereitschaft und dem Stundenende am Raum-PC. Eine Viertelminute spaeter ist
+// fuer nichts davon zu spaet, und es braucht keinen Zeitgeber je Vorfall, der
+// einen Neustart nicht ueberlebte.
 const TAKT_MS = 15 * 1000;
 
 // Nur das Format, das der Server fuer Kennungen erzeugt. Haelt fremde
@@ -620,6 +621,17 @@ function meldeEigenenStand(teacher) {
   });
 }
 
+// Verschiebt die Abmeldung am Raum-PC, nie nach vorn, und sagt es den Tabs
+// genau dieses Browsers - nicht dem Handy derselben Lehrkraft, das keine hat.
+function verschiebeAbmeldung(schluessel, bis) {
+  const bisher = schluessel ? sitzungen.abmeldenUm(schluessel) : null;
+  if (!bisher || !bis || bis <= bisher) return;
+  sitzungen.setzeAbmeldung(schluessel, bis);
+  for (const tab of io.sockets.sockets.values()) {
+    if (tab.data.sitzung === schluessel) tab.emit('abmeldung_um', { abmeldenUm: bis });
+  }
+}
+
 // Alle Geraete derselben Lehrkraft liegen im Raum ihrer teacherId. io.to()
 // erreicht damit auch den Tab, der zwischenzeitlich neu verbunden hat.
 function syncUserIncidents(teacherId) {
@@ -676,9 +688,11 @@ function keksOptionen(maxAge) {
 }
 
 // Die Sitzung zum Cookie dieser Anfrage, nur wenn sie ueber das Portal
-// entstanden ist.
-function portalSitzung(anfrage) {
-  const sitzung = sitzungen.sitzung(liesKeks(anfrage, SITZUNGS_KEKS));
+// entstanden ist. Auf Wunsch auch eine zum Stundenende beendete: Ihr Browser
+// ist beim Portal womoeglich noch angemeldet.
+function portalSitzung(anfrage, { auchBeendete = false } = {}) {
+  const token = liesKeks(anfrage, SITZUNGS_KEKS);
+  const sitzung = sitzungen.sitzung(token) || (auchBeendete ? sitzungen.beendete(token) : null);
   return sitzung && sitzung.portal ? sitzung : null;
 }
 
@@ -722,15 +736,19 @@ function lehrkraftFuerPortal(identitaet, schulId) {
 }
 
 // Beendet eine Sitzung und meldet alle Tabs ab, die an ihr haengen. Gemeinsam
-// fuer den Abmeldeknopf (mit Code und ueber das Portal) und fuer die Abmeldung,
-// die das Portal ueber den Vorderkanal schickt.
-function beendeSitzung(schluessel, ausloeser = null) {
-  const sitzung = sitzungen.widerrufen(schluessel);
+// fuer den Abmeldeknopf (mit Code und ueber das Portal), fuer die Abmeldung,
+// die das Portal ueber den Vorderkanal schickt, und fuer das Stundenende am
+// Raum-PC.
+function beendeSitzung(schluessel, { ausloeser = null, stundenende = false } = {}) {
+  // Zum Stundenende bleibt die Sitzung als beendet stehen. Meldet sich ihr
+  // Browser erst spaeter wieder, muss er sich noch beim Portal abmelden - und
+  // daran erkennt ihn der Server.
+  const sitzung = stundenende ? sitzungen.beenden(schluessel) : sitzungen.widerrufen(schluessel);
   for (const tab of io.sockets.sockets.values()) {
     if (tab.data.sitzung !== schluessel) continue;
     // Nicht an den Tab, der abmeldet: Der hat sich schon selbst
     // zurueckgesetzt und meldet sich womoeglich gleich neu an.
-    if (tab !== ausloeser) tab.emit('logged_out');
+    if (tab !== ausloeser) tab.emit('logged_out', stundenende ? { grund: 'stundenende' } : {});
     delete tab.data.portalToken;
     // Mit dem letzten Tab geht die Lehrkraft offline, und die Kollegenliste
     // wird neu verschickt.
@@ -788,6 +806,14 @@ app.get('/sso/rueckweg', async (req, res) => {
       'Für diese Installation ist keine Schule hinterlegt. Bitte an die Administration wenden.');
   }
 
+  // Im Cookie steckt noch eine Sitzung, die zum Stundenende beendet wurde: Der
+  // Browser hat sich nie beim Portal abgemeldet, weil der Rechner schlief oder
+  // der Tab zu war. Dann kam diese Anmeldung ohne Passwort zustande, aus der
+  // alten Portalsitzung - womoeglich durch den naechsten Schueler am Raum-PC.
+  // Keine neue Sitzung; die Seite holt erst die Abmeldung nach.
+  const liegengeblieben = portalSitzung(req, { auchBeendete: true });
+  if (liegengeblieben && liegengeblieben.beendet) return res.redirect(303, '/');
+
   const teacher = lehrkraftFuerPortal(identitaet, schulId);
 
   // Gehoerte die bisherige Sitzung dieses Browsers einer anderen Lehrkraft -
@@ -822,16 +848,25 @@ app.get('/sso/abmelden', (req, res) => {
 // Der Abmeldeknopf bei Anmeldung ueber das Portal. POST, damit kein Bild und
 // kein Link einer fremden Seite die Lehrkraft abmelden kann; das Cookie kommt
 // bei einem fremden POST ohnehin nicht mit (SameSite=Lax).
+//
+// Derselbe Weg nach dem Stundenende am Raum-PC: Die Sitzung in Auszeit ist da
+// schon beendet, beim Portal ist der Browser aber noch angemeldet.
 app.post('/abmelden', async (req, res) => {
-  const sitzung = portalSitzung(req);
+  const sitzung = portalSitzung(req, { auchBeendete: true });
+  const mitKeks = Boolean(liesKeks(req, SITZUNGS_KEKS));
   res.clearCookie(SITZUNGS_KEKS, keksOptionen());
-  if (!sitzung) return res.redirect(303, '/');
-  beendeSitzung(sitzung.schluessel);
+  if (sitzung) beendeSitzung(sitzung.schluessel);
   // Weiter zum Portal: Das beendet seine eigene Sitzung und meldet dann alle
   // anderen Module ab. Sonst bliebe man dort angemeldet - auf einem geteilten
   // Geraet genau das, was nicht passieren soll.
+  //
+  // Auch wenn Auszeit die Sitzung nicht mehr kennt, solange das Cookie
+  // mitkam, die Anfrage also von hier stammt: etwa aus dem zweiten Tab, dessen
+  // Sitzung der erste eben beendet hat. Ginge er zur Anmeldung, kaeme er ueber
+  // die noch offene Portalsitzung gleich wieder hinein.
+  if (!portal || !mitKeks) return res.redirect(303, '/');
   try {
-    res.redirect(303, await portal.abmeldeAdresse(sitzung.idToken));
+    res.redirect(303, await portal.abmeldeAdresse(sitzung && sitzung.idToken));
   } catch (err) {
     console.error('Abmeldung beim Portal nicht moeglich:', err.message);
     res.redirect(303, '/');
@@ -842,7 +877,10 @@ app.post('/abmelden', async (req, res) => {
 // Kuerzel stehen schon fest, gefragt wird nur noch der Raum.
 app.get('/api/sitzung', (req, res) => {
   res.set('Cache-Control', 'no-store');
-  const sitzung = portalSitzung(req);
+  const sitzung = portalSitzung(req, { auchBeendete: true });
+  // Zum Stundenende beendet: Die Seite meldet den Browser dann beim Portal ab,
+  // statt still neu anzumelden.
+  if (sitzung && sitzung.beendet) return res.status(401).json({ fehler: 'stundenende' });
   const teacher = sitzung ? teachers.get(sitzung.teacherId) : undefined;
   if (!teacher) return res.status(401).json({ fehler: 'keine_sitzung' });
   res.json({ name: teacher.name, kuerzel: teacher.kuerzel, raum: teacher.room });
@@ -950,7 +988,10 @@ io.on('connection', (socket) => {
     const sitzung = socket.data.portalToken ? sitzungen.sitzung(socket.data.portalToken) : null;
     const teacher = sitzung && sitzung.portal ? teachers.get(sitzung.teacherId) : undefined;
     if (!teacher) {
-      socket.emit('login_failed', { grund: 'portal_sitzung_fehlt' });
+      // Zum Stundenende beendet, waehrend dieser Tab keine Verbindung hatte:
+      // Er soll den Browser jetzt beim Portal abmelden.
+      const beendet = socket.data.portalToken && sitzungen.beendete(socket.data.portalToken);
+      socket.emit('login_failed', { grund: beendet ? 'stundenende' : 'portal_sitzung_fehlt' });
       return;
     }
     if (teacher.schulId !== schulId) {
@@ -969,7 +1010,7 @@ io.on('connection', (socket) => {
     }
     teacher.online = true;
     teacher.offlineSeit = null;
-    verbinde(teacher, schule, { schluessel: sitzung.schluessel });
+    verbinde(teacher, schule, { schluessel: sitzung.schluessel, geteilt: data.geteilt === true });
   }
 
   function wiederanmelden(data, schule, schulId) {
@@ -977,9 +1018,11 @@ io.on('connection', (socket) => {
     // Ein Portal-Token gehoert ins Cookie, nicht in die Nachricht.
     const teacher = sitzung && !sitzung.portal ? teachers.get(sitzung.teacherId) : undefined;
     // Abgelaufen, widerrufen oder nach einem Neustart unbekannt - fuer den
-    // Client laeuft alles auf dasselbe hinaus: neu anmelden.
+    // Client laeuft alles auf dasselbe hinaus: neu anmelden. Nur nach dem
+    // Stundenende nicht still: Am Raum-PC stuende sonst gleich wieder dieselbe
+    // Lehrkraft in der Maske und wuerde angemeldet.
     if (!teacher) {
-      socket.emit('login_failed', { grund: 'sitzung_ungueltig' });
+      socket.emit('login_failed', { grund: sitzungen.beendete(data.token) ? 'stundenende' : 'sitzung_ungueltig' });
       return;
     }
     // Eine Sitzung gehoert dauerhaft zu einer Schule. Wer denselben Browser an
@@ -1001,7 +1044,7 @@ io.on('connection', (socket) => {
     }
     teacher.online = true;
     teacher.offlineSeit = null;
-    verbinde(teacher, schule, { schluessel: sitzung.schluessel });
+    verbinde(teacher, schule, { schluessel: sitzung.schluessel, geteilt: data.geteilt === true });
   }
 
   function erstanmelden(data, schule, schulId) {
@@ -1047,12 +1090,16 @@ io.on('connection', (socket) => {
     teachers.set(teacher.id, teacher);
     ablage.lehrkraftSpeichern(teacher);
     const token = sitzungen.ausstellen(teacher.id);
-    verbinde(teacher, schule, { token, schluessel: sitzungen.sitzung(token).schluessel });
+    verbinde(teacher, schule, { token, schluessel: sitzungen.sitzung(token).schluessel, geteilt: data.geteilt === true });
   }
 
   // Bindet diesen Socket an Lehrkraft und Sitzung. Die Sitzung merkt er sich,
   // damit eine Abmeldung genau die Tabs dieses Browsers trifft.
-  function verbinde(teacher, schule, { token = null, schluessel }) {
+  //
+  // "geteilt" meldet ein Browser am PC: Das kann ein Raum-PC sein, an dem nach
+  // dem Klingeln die naechste Klasse sitzt. Dort endet die Sitzung mit der
+  // Stunde. Handy, Tablet und installierte App gehoeren einer Person.
+  function verbinde(teacher, schule, { token = null, schluessel, geteilt = false }) {
     // Derselbe Tab kann sich ein zweites Mal anmelden, etwa nach einem
     // Doppelklick auf "Starten". Die erste Zuordnung muss dann geloest werden,
     // sonst bliebe deren Lehrkraft ohne Verbindung fuer immer "online".
@@ -1064,11 +1111,21 @@ io.on('connection', (socket) => {
     socket.join(teacher.id);
     socket.join(`schule:${teacher.schulId}`);
 
+    // Einmal festgelegt, beim ersten Tab: Ein Reconnect verschiebt nichts.
+    if (geteilt && !sitzungen.abmeldenUm(schluessel)) {
+      sitzungen.setzeAbmeldung(schluessel, Math.max(
+        bereitOptionen(teacher.schulId)[0].bis,
+        // Schon fuer die Doppelstunde bereit gemeldet, etwa am Handy.
+        (teacher.isAvailable && teacher.bereitBis) || 0
+      ));
+    }
+
     socket.emit('login_success', {
       ...oeffentlich(teacher),
       isAvailable: teacher.isAvailable,
       plaetze: teacher.plaetze,
       bereitBis: teacher.bereitBis || null,
+      abmeldenUm: sitzungen.abmeldenUm(schluessel),
       hinweisNiemand: einstellungenDer(teacher.schulId).hinweisNiemand,
       schulId: teacher.schulId,
       schulName: schule.name,
@@ -1102,6 +1159,9 @@ io.on('connection', (socket) => {
       teacher.bereitBis = gewaehlt.bis;
     }
     if (!teacher.isAvailable) teacher.bereitBis = null;
+    // Bereit fuer die Doppelstunde: Am Raum-PC bleibt die Lehrkraft so lange
+    // angemeldet, sonst fiele sie mittendrin aus der Liste.
+    if (teacher.isAvailable) verschiebeAbmeldung(socket.data.sitzung, teacher.bereitBis);
     // Aufnahmebereitschaft und Plaetze sind Laufzeitzustand; dauerhaft
     // festgehalten wird nur der Raum.
     const room = text(data && data.room, 30);
@@ -1124,6 +1184,18 @@ io.on('connection', (socket) => {
     const teacher = aktuelleLehrkraft(socket);
     if (!teacher) return antwort({ ok: false });
     antwort({ ok: true, optionen: bereitOptionen(teacher.schulId) });
+  });
+
+  // "Angemeldet bleiben" kurz vor dem Klingeln: eine Stunde dran, gezaehlt
+  // vom bisherigen Ende - also bis zum Ende der Stunde danach, ohne
+  // Klingelplan um die pauschale Frist.
+  socket.on('angemeldet_bleiben', (data, antwort) => {
+    if (typeof antwort !== 'function') return;
+    const teacher = aktuelleLehrkraft(socket);
+    const bisher = sitzungen.abmeldenUm(socket.data.sitzung);
+    if (!teacher || !bisher) return antwort({ ok: false });
+    verschiebeAbmeldung(socket.data.sitzung, bereitOptionen(teacher.schulId, bisher)[0].bis);
+    antwort({ ok: true, abmeldenUm: sitzungen.abmeldenUm(socket.data.sitzung) });
   });
 
   // Schueler zu einer Kollegin oder einem Kollegen schicken.
@@ -1534,7 +1606,7 @@ io.on('connection', (socket) => {
       const sitzung = sitzungen.sitzung(data.token);
       if (sitzung) schluessel = sitzung.schluessel;
     }
-    if (schluessel) beendeSitzung(schluessel, socket);
+    if (schluessel) beendeSitzung(schluessel, { ausloeser: socket });
   });
 
   // Der Datensatz bleibt: die Verbindung faellt staendig kurz weg, die
@@ -1753,9 +1825,17 @@ function pruefeBereitschaft(jetzt = Date.now()) {
   for (const schulId of schulen) broadcastAvailableTeachers(schulId);
 }
 
+// Am Raum-PC endet die Sitzung mit der Stunde. Die Tabs melden den Browser
+// daraufhin auch beim Portal ab; ein Rechner, der gerade schlief, holt das beim
+// Aufwachen nach.
+function pruefeStundenende(jetzt = Date.now()) {
+  for (const schluessel of sitzungen.faellig(jetzt)) beendeSitzung(schluessel, { stundenende: true });
+}
+
 const takt = setInterval(() => {
   pruefeUeberfaellige();
   pruefeBereitschaft();
+  pruefeStundenende();
 }, TAKT_MS);
 if (typeof takt.unref === 'function') takt.unref();
 
@@ -1888,4 +1968,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, pruefeUeberfaellige, pruefeBereitschaft, ablage };
+module.exports = { server, io, bereit, beenden, raeumeAuf, pruefeJahreswechsel, pruefeUeberfaellige, pruefeBereitschaft, pruefeStundenende, ablage };

@@ -81,3 +81,33 @@ test('Kennungen, fremde Formate und Unsinn sind kein Token', () => {
     assert.equal(sitzungen.pruefen(wert), null);
   }
 });
+
+test('Zur Abmeldezeit faellig, danach beendet: nichts mehr offen, aber noch erkennbar', () => {
+  const uhr = stehendeUhr();
+  const sitzungen = erstelleSitzungen({ gueltigMs: 10_000, jetzt: uhr.jetzt });
+  const raumPc = sitzungen.ausstellen('kennung-a', { portal: true, idToken: 'id' });
+  const handy = sitzungen.ausstellen('kennung-a');
+  const schluessel = sitzungen.sitzung(raumPc).schluessel;
+
+  sitzungen.setzeAbmeldung(schluessel, uhr.jetzt() + 1000);
+  assert.equal(sitzungen.abmeldenUm(schluessel), uhr.jetzt() + 1000);
+  assert.deepEqual(sitzungen.faellig(), []);
+  uhr.vor(1000);
+  assert.deepEqual(sitzungen.faellig(), [schluessel]);
+
+  sitzungen.beenden(schluessel);
+  assert.deepEqual(sitzungen.faellig(), []);
+  assert.equal(sitzungen.sitzung(raumPc), null);
+  assert.equal(sitzungen.pruefen(raumPc), null);
+  assert.equal(sitzungen.gueltig(schluessel), false);
+  assert.equal(sitzungen.abmeldenUm(schluessel), null);
+  // Fuer die Abmeldung beim Portal bleibt sie mit ihrem ID-Token erkennbar.
+  assert.equal(sitzungen.beendete(raumPc).idToken, 'id');
+  // Das Handy derselben Lehrkraft hat damit nichts zu tun.
+  assert.equal(sitzungen.pruefen(handy), 'kennung-a');
+  assert.equal(sitzungen.beendete(handy), null);
+
+  // Mit dem Ablauf ist auch die beendete Sitzung weg.
+  uhr.vor(9000);
+  assert.equal(sitzungen.beendete(raumPc), null);
+});
