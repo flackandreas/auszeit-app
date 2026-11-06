@@ -11,6 +11,7 @@ Die **Auszeit App** ist eine Echtzeit-Webanwendung für Schulen. Sie ermöglicht
 - **Verfügbarkeit & Kapazitätsverwaltung**: Lehrkräfte stellen per Schalter ein, ob sie aktuell Schüler aufnehmen können, und geben an, wie viele Plätze sie anbieten (1, 2 oder 3). Die freien Plätze ergeben sich aus den angebotenen abzüglich der laufenden Auszeiten und werden im Dashboard als Belegung angezeigt.
 - **Bereit bis zum Stundenende**: Beim Einschalten bestätigt die Lehrkraft den Raum und tippt das Ende an – diese Stunde oder die nächste (Doppelstunde). Danach springt der Schalter von selbst um; niemand steht morgens mit dem Raum von gestern in der Liste (siehe [Bereitschaft und Klingelplan](#bereitschaft-und-klingelplan)).
 - **Schuleinstellungen**: Die Verwaltung pflegt in der App den Klingelplan und einen Hinweis für den Fall, dass niemand frei ist.
+- **Abmeldung am Raum-PC**: Im Browser am PC endet die Sitzung zum Stundenende – über das Portal auch dort. Drei Minuten vorher lässt sie sich um eine Stunde verlängern. Handy, Tablet und installierte App bleiben angemeldet (siehe [Abmeldung am Raum-PC](#abmeldung-am-raum-pc)).
 - **Echtzeit-Verweisung ("Auszeit anfordern")**: 
   - Ansicht aller aktuell verfügbaren Kolleginnen und Kollegen inkl. Raum und freien Kapazitäten in Echtzeit.
   - Im Schulbetrieb Auswahl aus der Schülerliste: Klasse ist vorausgewählt, Schüler antippen, Kollegin antippen – zwei Tipps (siehe [Schülerliste](#schülerliste)). Ohne Portal und bei Demo-Mandanten ein freies Namensfeld.
@@ -74,7 +75,7 @@ auszeit-app/
 │   ├── klingelplan.js    # Klingelplan zerlegen, Ende einer Bereitschaft
 │   ├── schueler.js       # Schülerliste: Zeilen zerlegen, Abgleich mit dem Bestand
 │   ├── push.js           # Web Push: Konfiguration, Prüfung der Abos, Versand
-│   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen
+│   ├── sitzungen.js      # Sitzungstokens: ausstellen, prüfen, widerrufen, zum Stundenende beenden
 │   ├── portal.js         # Anmeldung über das SchulOS-Portal (OpenID Connect)
 │   ├── kekse.js          # Cookies lesen – für Routen und Socket-Handshake
 │   ├── speicher.js       # Ablage der Mandanten (daten/schulen.json)
@@ -173,8 +174,8 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 
 | Event | Richtung | Beschreibung |
 | :--- | :--- | :--- |
-| `login` | Client ➔ Server | Drei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`) – oder **über das Portal** (`portal: true` und Raum); wer die Lehrkraft ist, hat dann schon der Handshake aus dem Cookie gelesen. Eine mitgeschickte Kennung wird nie beachtet. |
-| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft samt `bereitBis`, angebotene Plätze, `listenModus`, Rolle `verwaltung`, `hinweisNiemand`). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
+| `login` | Client ➔ Server | Drei Wege: **Erstanmeldung** mit Name, Raum und ggf. Beitrittscode – **Wiederanmeldung** nach einem Reconnect allein mit dem Sitzungstoken (`token`) – oder **über das Portal** (`portal: true` und Raum); wer die Lehrkraft ist, hat dann schon der Handshake aus dem Cookie gelesen. Eine mitgeschickte Kennung wird nie beachtet. `geteilt: true` meldet einen Browser am PC: Seine Sitzung endet zum Stundenende. |
+| `login_success` | Server ➔ Client | Bestätigt die Anmeldung und gibt den **serverseitigen** Stand zurück (öffentliche Kennung, Raum, Aufnahmebereitschaft samt `bereitBis`, angebotene Plätze, `listenModus`, Rolle `verwaltung`, `hinweisNiemand`, am Raum-PC `abmeldenUm`). Nur nach der Erstanmeldung enthält sie das Sitzungstoken. |
 | `schuelerliste` | Server ➔ Clients der Schule | Die aktiven Schüler (Kennung, Klasse, Vor- und Nachname) – nach der Anmeldung und nach jedem Import. Nur im Schulbetrieb. |
 | `schueler_vorschau` | Client ➔ Server (mit Rückmeldung) | Zerlegt eine eingefügte Liste und meldet, was ein Import bewirken würde. Nur Rolle Verwaltung. |
 | `schueler_uebernehmen` | Client ➔ Server (mit Rückmeldung) | Übernimmt die Liste. Nur Rolle Verwaltung. |
@@ -182,7 +183,7 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `einstellungen_speichern` | Client ➔ Server (mit Rückmeldung) | Speichert Klingelplan (als Text, eine Zeile je Stunde) und Hinweis. Ein Plan mit Fehlern wird abgelehnt (`grund: 'klingelplan'`, Zeilen mit Grund). Nur Rolle Verwaltung. |
 | `schulhinweise` | Server ➔ Clients der Schule | Der neue Hinweis für „niemand frei“, nach dem Speichern. |
 | `bereit_optionen` | Client ➔ Server (mit Rückmeldung) | Die möglichen Enden einer Bereitschaft, die jetzt beginnt: `[{ stunden, bis, nachPlan }]`. |
-| `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule`, `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt), `nur_portal` (Anmeldung mit Code abgeschaltet), `portal_sitzung_fehlt` oder `raum_fehlt`. |
+| `login_failed` | Server ➔ Client | Abweisung mit Grund: `pin_falsch`, `unbekannte_schule`, `kennung_fremder_schule`, `sitzung_ungueltig` (Token abgelaufen, widerrufen oder nach einem Neustart unbekannt), `nur_portal` (Anmeldung mit Code abgeschaltet), `portal_sitzung_fehlt`, `raum_fehlt` oder `stundenende` (die Sitzung endete zum Stundenende, während der Tab keine Verbindung hatte – er meldet den Browser nun ab, über das Portal auch dort). |
 | `update_status` | Client ➔ Server | Aktualisiert Aufnahmebereitschaft (`isAvailable`), angebotene Plätze (`capacity`) und Raum. Beim Einschalten wählt `stunden` (1 oder 2) das Ende; eine Änderung der Plätze lässt es stehen. |
 | `status_updated` | Server ➔ eigene Geräte | Spiegelt den geänderten eigenen Stand an alle Tabs derselben Lehrkraft zurück, mit `bereitBis`. Kommt auch, wenn die Bereitschaft mit dem Stundenende abläuft. |
 | `available_teachers` | Server ➔ Clients | Liste aller aufnahmebereiten Lehrkräfte mit ihren **freien** Plätzen. |
@@ -206,7 +207,9 @@ AUSZEIT_TEST_DB_HOST=127.0.0.1 AUSZEIT_TEST_DB_PORT=33306 AUSZEIT_TEST_DB_PASS=t
 | `push_test` | Client ➔ Server (mit Rückmeldung) | Probe-Benachrichtigung an dieses Gerät. Abgelehnt mit `erneuern`, `dienst_nicht_erreichbar`, `fehler`, `zu_schnell` oder `kein_abo`. |
 | `push_abmelden` | Client ➔ Server (mit Rückmeldung) | Benachrichtigungen auf diesem Gerät aus. |
 | `logout` | Client ➔ Server | Meldet die Lehrkraft ab und widerruft das Sitzungstoken; laufende Vorfälle bleiben bestehen. Das Token geht mit, damit die Abmeldung auch dann greift, wenn sie erst nach einem Reconnect ankommt. |
-| `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. |
+| `logged_out` | Server ➔ übrige Tabs | Die Sitzung dieses Tabs ist beendet – durch einen anderen Tab oder durch die Abmeldung im Portal; der Tab kehrt zur Anmeldung zurück. Mit `grund: 'stundenende'` endete sie am Raum-PC; dann geht es weiter zur Abmeldung beim Portal. |
+| `angemeldet_bleiben` | Client ➔ Server (mit Rückmeldung) | Verschiebt die Abmeldung am Raum-PC um eine Stunde, gezählt vom bisherigen Ende: bis zum Ende der Stunde danach, ohne Klingelplan um `AUSZEIT_BEREIT_PAUSCHAL_MS`. Antwort mit dem neuen `abmeldenUm`. |
+| `abmeldung_um` | Server ➔ Tabs desselben Browsers | Die Abmeldung wurde verschoben – durch „Angemeldet bleiben“ oder weil die Lehrkraft sich für die Doppelstunde bereit gemeldet hat. |
 | `sync_incidents` | Server ➔ Client | Synchronisiert alle Vorfälle des Nutzers, angereichert um die aktuellen Räume, die Erreichbarkeit beider Seiten und `ueberfaellig` (seit `AUSZEIT_UEBERFAELLIG_MS` unterwegs und nicht bestätigt). |
 
 ### Zustandsautomat eines Vorfalls
@@ -718,6 +721,45 @@ Die Sitzungen stehen in der Datenbank – nur der Hash des Tokens – und
 überstehen damit einen Neustart: Die Lehrkräfte kommen ohne erneuten Code
 zurück.
 
+### Abmeldung am Raum-PC
+
+Viele Lehrkräfte nutzen Auszeit am Lehrer-PC im Klassenraum. Nach dem Klingeln
+sitzt dort die nächste Klasse – und vor einer offenen Sitzung, in der Namen
+von Schülern stehen und in der man Kollegen Schüler schicken kann. Deshalb
+endet die Sitzung eines **Browsers am PC zum Stundenende**:
+
+- **Welches Gerät?** Ein Browser am PC meldet sich bei der Anmeldung als
+  geteilt (`geteilt: true`). Handy, Tablet und die als App installierte
+  Auszeit gehören einer Person und bleiben angemeldet. Wer Auszeit am eigenen
+  Laptop nutzt, installiert es dort als App („App installieren“ in Chrome oder
+  Edge) und bleibt damit ebenfalls angemeldet.
+- **Wann?** Zum Ende der Stunde, in der die Sitzung beginnt – gerechnet wie bei
+  der [Bereitschaft](#bereitschaft-und-klingelplan): kurz vor dem Klingeln oder
+  in der Pause zählt die nächste Stunde, ohne Klingelplan gilt die pauschale
+  Frist. Wer für die Doppelstunde bereit ist, bleibt so lange angemeldet. Ein
+  Reconnect verschiebt nichts.
+- **Vorwarnung.** Drei Minuten vorher erscheint „Stundenende – um 09:15 wird
+  dieser PC abgemeldet“ mit dem Knopf **„Angemeldet bleiben“**: eine Stunde
+  dran, gezählt vom bisherigen Ende.
+- **Abmelden** tut der Server selbst (er sieht alle 15 Sekunden nach) und
+  meldet alle Tabs dieses Browsers ab. Über das Portal geht es weiter zu
+  dessen Abmeldung, wie beim Abmeldeknopf. Sonst bliebe das Portal angemeldet,
+  und ein Schüler käme mit einem Klick auf die Kachel ohne Passwort als die
+  Lehrkraft wieder herein. Kommt die Nachricht des Servers nicht an – etwa
+  weil das WLAN gerade weg ist –, meldet die Seite eine Minute später selbst
+  ab.
+- **Schlafender Rechner, geschlossener Tab.** Dann erfährt der Browser das
+  Stundenende erst später. Damit es auch dann nicht ohne Passwort weitergeht,
+  bleibt die Sitzung auf dem Server als *beendet* stehen, statt zu
+  verschwinden: Sie öffnet nichts mehr, aber Auszeit erkennt ihren Browser.
+  Meldet er sich wieder – der Tab wacht auf, die Seite wird geladen oder die
+  Kachel angeklickt –, holt Auszeit zuerst die Abmeldung beim Portal nach.
+  Der Rückweg vom Portal stellt in diesem Fall keine neue Sitzung aus.
+
+Was Auszeit nicht abdecken kann: Wird der Tab vor dem Stundenende geschlossen
+und danach nur das Portal geöffnet, nicht Auszeit, bleibt das Portal bis zu
+seinem eigenen Ablauf angemeldet. Für andere Module gilt dort dasselbe.
+
 ### Betrieb im SchulOS-Verbund
 
 Auszeit läuft auch als Modul im Server-Verbund des SchulOS-Portals
@@ -794,8 +836,8 @@ ausgefüllt, nennt das Log beim Start die fehlenden Angaben, und die Anmeldung
 | `GET /sso/start` | Anmeldung am Portal beginnen – das Ziel der Kachel |
 | `GET /sso/rueckweg` | Rückweg vom Portal: Code einlösen, Lehrkraft zuordnen, Sitzung beginnen |
 | `GET /sso/abmelden` | Abmeldung über den Vorderkanal (OpenID Connect Front-Channel Logout) |
-| `POST /abmelden` | Abmeldeknopf: Sitzung beenden, weiter zur Abmeldung beim Portal |
-| `GET /api/sitzung` | Name, Kürzel und Raum der angemeldeten Lehrkraft, sonst `401` |
+| `POST /abmelden` | Abmeldeknopf und Stundenende am Raum-PC: Sitzung beenden, weiter zur Abmeldung beim Portal |
+| `GET /api/sitzung` | Name, Kürzel und Raum der angemeldeten Lehrkraft, sonst `401` – mit `fehler: 'stundenende'`, wenn sich dieser Browser noch beim Portal abmelden muss |
 
 **Was geprüft wird.** Den Ablauf erledigt die Bibliothek `openid-client`, der
 Prüfumfang entspricht dem der PHP-Module (`schulos-sso`): PKCE mit S256,

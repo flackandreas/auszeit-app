@@ -256,12 +256,13 @@ function erstellePortal(konfiguration) {
 
   // Wohin der Browser nach dem Abmelden in Auszeit geht: zum Portal, das dann
   // auch alle anderen Module abmeldet. Ohne erreichbares Portal bleibt nur die
-  // eigene Abmeldung.
+  // eigene Abmeldung. Ohne ID-Token geht es auch: Das Portal beendet die
+  // Sitzung, deren Cookie der Browser mitbringt.
   async function abmeldeAdresse(idToken) {
     const client = await oidc();
     const konfig = await server();
     return client.buildEndSessionUrl(konfig, {
-      id_token_hint: idToken,
+      ...(idToken ? { id_token_hint: idToken } : {}),
       post_logout_redirect_uri: `${new URL(konfiguration.rueckadresse).origin}/`
     }).href;
   }

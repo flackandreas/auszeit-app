@@ -50,9 +50,9 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
     return token;
   }
 
-  // Die gueltige Sitzung zum Token samt ihrem Schluessel, sonst null. Ein
+  // Der Eintrag zum Token samt Schluessel, beendet oder nicht. Ein
   // abgelaufenes Token wird dabei gleich entfernt.
-  function sitzung(token) {
+  function nachschlagen(token) {
     if (typeof token !== 'string' || !TOKEN_FORMAT.test(token)) return null;
     const schluessel = hashe(token);
     const eintrag = eintraege.get(schluessel);
@@ -65,11 +65,61 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
     return { ...eintrag, schluessel };
   }
 
+  // Die gueltige Sitzung zum Token samt ihrem Schluessel, sonst null.
+  function sitzung(token) {
+    const gefunden = nachschlagen(token);
+    return gefunden && !gefunden.beendet ? gefunden : null;
+  }
+
+  // Eine Sitzung, die zum Stundenende beendet wurde, deren Browser davon aber
+  // noch nichts weiss - etwa weil der Rechner schlief. Sie oeffnet nichts
+  // mehr; sie sagt nur, dass sich dieser Browser noch beim Portal abmelden
+  // muss.
+  function beendete(token) {
+    const gefunden = nachschlagen(token);
+    return gefunden && gefunden.beendet ? gefunden : null;
+  }
+
   // Gilt die Sitzung mit diesem Schluessel noch? Fuer alles, was an einer
   // Sitzung haengt, ohne ihr Token zu kennen - etwa ein Push-Abo.
   function gueltig(schluessel) {
     const eintrag = eintraege.get(schluessel);
-    return Boolean(eintrag && eintrag.gueltigBis > jetzt());
+    return Boolean(eintrag && !eintrag.beendet && eintrag.gueltigBis > jetzt());
+  }
+
+  // Auf einem Rechner, den viele benutzen, endet die Sitzung zu einer festen
+  // Uhrzeit statt erst nach dem Schultag.
+  function abmeldenUm(schluessel) {
+    const eintrag = eintraege.get(schluessel);
+    return eintrag && !eintrag.beendet && eintrag.abmeldenUm ? eintrag.abmeldenUm : null;
+  }
+
+  function setzeAbmeldung(schluessel, zeitpunkt) {
+    const eintrag = eintraege.get(schluessel);
+    if (!eintrag || eintrag.beendet) return;
+    eintrag.abmeldenUm = zeitpunkt;
+    if (ablage) ablage.sitzungSpeichern(schluessel, eintrag);
+  }
+
+  // Die Sitzungen, deren Abmeldezeit erreicht ist.
+  function faellig(grenze = jetzt()) {
+    const gefunden = [];
+    for (const [schluessel, eintrag] of eintraege) {
+      if (eintrag.beendet || !eintrag.abmeldenUm || eintrag.abmeldenUm > grenze) continue;
+      if (eintrag.gueltigBis > jetzt()) gefunden.push(schluessel);
+    }
+    return gefunden;
+  }
+
+  // Beendet eine Sitzung, ohne sie zu vergessen: Sie oeffnet nichts mehr, aber
+  // ihr Browser ist noch zu erkennen, wenn er sich wieder meldet. Ganz weg ist
+  // sie mit widerrufen() oder ihrem Ablauf.
+  function beenden(schluessel) {
+    const eintrag = eintraege.get(schluessel);
+    if (!eintrag) return null;
+    eintrag.beendet = true;
+    if (ablage) ablage.sitzungSpeichern(schluessel, eintrag);
+    return { ...eintrag, schluessel };
   }
 
   // Liefert die Kennung der Lehrkraft oder null.
@@ -102,7 +152,8 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
   }
 
   // Schluessel aller Sitzungen, auf die die Bedingung zutrifft - etwa alle zu
-  // einer Portalsitzung, die gerade abgemeldet wird.
+  // einer Portalsitzung, die gerade abgemeldet wird. Beendete gehoeren dazu:
+  // Mit der Abmeldung beim Portal ist auch fuer sie nichts mehr offen.
   function schluesselWo(bedingung) {
     const gefunden = [];
     for (const [schluessel, eintrag] of eintraege) {
@@ -137,7 +188,12 @@ function erstelleSitzungen({ gueltigMs, jetzt = Date.now, ablage = null }) {
   return {
     ausstellen,
     sitzung,
+    beendete,
     gueltig,
+    abmeldenUm,
+    setzeAbmeldung,
+    faellig,
+    beenden,
     pruefen,
     widerrufen,
     widerrufeFuer,
