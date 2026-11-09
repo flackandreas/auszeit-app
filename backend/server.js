@@ -436,6 +436,104 @@ function istDemo(schulId) {
   return Boolean(schule && schule.demo);
 }
 
+// --- Ankunft und Rueckweg ---
+//
+// Gemeinsam fuer die Knoepfe der aufnehmenden Lehrkraft und fuer die
+// Demo-Betreuung. Die Pruefungen (wer darf, welcher Status) stehen beim
+// Aufrufer.
+function ankunftBestaetigen(incident) {
+  incident.status = BETREUT;
+  incident.angekommenAm = new Date();
+  ablage.vorfallSpeichern(incident);
+
+  io.to(incident.senderId).emit('student_arrived', fuerClient(incident));
+  syncUserIncidents(incident.senderId);
+  syncUserIncidents(incident.receiverId);
+}
+
+function zurueckschicken(incident) {
+  incident.status = AUF_DEM_RUECKWEG;
+  incident.rueckwegSeit = new Date();
+  ablage.vorfallSpeichern(incident);
+
+  // Der Platz wird sofort frei - der Schueler hat den Raum verlassen.
+  gibPlatzFrei(incident);
+
+  const angereichert = fuerClient(incident);
+  io.to(incident.senderId).emit('student_returning', angereichert);
+  benachrichtige(incident.senderId, 'zurueck', incident);
+
+  syncUserIncidents(incident.senderId);
+  syncUserIncidents(incident.receiverId);
+  broadcastAvailableTeachers(incident.schulId);
+  return angereichert;
+}
+
+// --- Demo-Betreuung ---
+//
+// Auszeit braucht zwei Menschen: eine Lehrkraft, die verweist, und eine, die
+// aufnimmt. Wer die Demo allein ausprobiert, haette niemanden in der Liste.
+// In Demo-Mandanten steht deshalb immer eine virtuelle Betreuung bereit: Sie
+// bestaetigt die Ankunft nach ein paar Sekunden und schickt den Schueler nach
+// gut einer Minute zurueck. Sie lebt nur im Speicher, nie in der Ablage, und
+// nur in Mandanten mit "demo": true. AUSZEIT_DEMO_BETREUUNG=0 schaltet sie ab.
+const DEMO_BETREUUNG = String(process.env.AUSZEIT_DEMO_BETREUUNG ?? '1').trim() !== '0';
+const DEMO_ANKUNFT_MS = dauerAusUmgebung('AUSZEIT_DEMO_ANKUNFT_MS', 8 * 1000);
+const DEMO_RUECKWEG_MS = dauerAusUmgebung('AUSZEIT_DEMO_RUECKWEG_MS', 90 * 1000);
+const DEMO_ZURUECKHOLEN_MS = 4 * 1000;
+
+function demoBetreuungsKennung(schulId) {
+  return `demobetreuung_${schulId}`;
+}
+
+function spaeter(aufgabe, ms) {
+  const zeit = setTimeout(aufgabe, ms);
+  if (typeof zeit.unref === 'function') zeit.unref();
+}
+
+// Legt die Betreuung in jedem Demo-Mandanten an und entfernt sie, wo ein
+// Mandant keine Demo mehr ist. Laeuft beim Start und mit jedem Takt - die
+// Mandantenliste kann sich ohne Neustart aendern.
+function richteDemoBetreuungEin() {
+  for (const teacher of [...teachers.values()]) {
+    if (teacher.demoBetreuung && (!DEMO_BETREUUNG || !istDemo(teacher.schulId))) {
+      teachers.delete(teacher.id);
+      broadcastAvailableTeachers(teacher.schulId);
+    }
+  }
+  if (!DEMO_BETREUUNG) return;
+  for (const [schulId, schule] of SCHULEN) {
+    if (!schule.demo || !schule.aktiv) continue;
+    const id = demoBetreuungsKennung(schulId);
+    if (teachers.has(id)) continue;
+    teachers.set(id, {
+      id,
+      sub: null,
+      kuerzel: '',
+      schulId,
+      name: 'Demo-Betreuung (Trainingsraum)',
+      room: 'E 012',
+      isAvailable: true,
+      plaetze: 3,
+      betreut: [],
+      online: true,
+      offlineSeit: null,
+      bereitBis: null,
+      verwaltung: false,
+      demoBetreuung: true
+    });
+    broadcastAvailableTeachers(schulId);
+  }
+}
+
+function planeDemoBetreuung(incident) {
+  spaeter(() => {
+    if (incident.status !== UNTERWEGS) return;
+    ankunftBestaetigen(incident);
+    spaeter(() => { if (incident.status === BETREUT) zurueckschicken(incident); }, DEMO_RUECKWEG_MS);
+  }, DEMO_ANKUNFT_MS);
+}
+
 // Schueler aus der Liste statt Freitext - im Schulbetrieb mit Anmeldung ueber
 // das Portal. Ohne Portal gibt es keine Rolle "Verwaltung", die eine Liste
 // einfuegen koennte, und ohne echte Identitaeten taugt das Protokoll dort
@@ -1265,6 +1363,8 @@ io.on('connection', (socket) => {
     syncUserIncidents(sender.id);
     syncUserIncidents(receiver.id);
     broadcastAvailableTeachers(sender.schulId);
+
+    if (receiver.demoBetreuung) planeDemoBetreuung(incident);
   });
 
   // Die abgebende Lehrkraft nimmt eine Verweisung zurueck - nur kurz nach dem
@@ -1310,13 +1410,7 @@ io.on('connection', (socket) => {
     // zweimal, und ein zweiter Klick darf den Vorfall nicht weiterdrehen.
     if (incident.status !== UNTERWEGS) return;
 
-    incident.status = BETREUT;
-    incident.angekommenAm = new Date();
-    ablage.vorfallSpeichern(incident);
-
-    io.to(incident.senderId).emit('student_arrived', fuerClient(incident));
-    syncUserIncidents(incident.senderId);
-    syncUserIncidents(teacher.id);
+    ankunftBestaetigen(incident);
   });
 
   // Aufnehmende Lehrkraft schickt den Schueler zurueck.
@@ -1327,21 +1421,7 @@ io.on('connection', (socket) => {
     if (incident.receiverId !== teacher.id) return;
     if (incident.status !== BETREUT) return;
 
-    incident.status = AUF_DEM_RUECKWEG;
-    incident.rueckwegSeit = new Date();
-    ablage.vorfallSpeichern(incident);
-
-    // Der Platz wird sofort frei - der Schueler hat den Raum verlassen.
-    gibPlatzFrei(incident);
-
-    const angereichert = fuerClient(incident);
-    io.to(incident.senderId).emit('student_returning', angereichert);
-    benachrichtige(incident.senderId, 'zurueck', incident);
-    socket.emit('send_back_ok', angereichert);
-
-    syncUserIncidents(incident.senderId);
-    syncUserIncidents(teacher.id);
-    broadcastAvailableTeachers(teacher.schulId);
+    socket.emit('send_back_ok', zurueckschicken(incident));
   });
 
   // Sendende Lehrkraft bestaetigt die Rueckkehr - der Vorfall ist beendet.
@@ -1381,6 +1461,12 @@ io.on('connection', (socket) => {
     benachrichtige(incident.receiverId, 'rueckholwunsch', incident);
     syncUserIncidents(incident.senderId);
     syncUserIncidents(incident.receiverId);
+
+    // Die Demo-Betreuung folgt dem Wunsch nach ein paar Sekunden.
+    const betreuung = teachers.get(incident.receiverId);
+    if (betreuung && betreuung.demoBetreuung) {
+      spaeter(() => { if (incident.status === BETREUT) zurueckschicken(incident); }, DEMO_ZURUECKHOLEN_MS);
+    }
   });
 
   // Einseitiger Abschluss. Nur erlaubt, solange die Gegenseite offline ist -
@@ -1833,6 +1919,7 @@ function pruefeStundenende(jetzt = Date.now()) {
 }
 
 const takt = setInterval(() => {
+  richteDemoBetreuungEin();
   pruefeUeberfaellige();
   pruefeBereitschaft();
   pruefeStundenende();
@@ -1877,6 +1964,7 @@ const bereit = (async () => {
   const jetzt = Date.now();
   const stand = await ablage.laden({ jetztMs: jetzt, anzeigeSeit: new Date(jetzt - ANZEIGE_FENSTER_MS) });
   const zahlen = wiederherstellen(stand);
+  richteDemoBetreuungEin();
   if (ablage.art === 'mariadb') {
     console.log(`Ablage: MariaDB. Geladen: ${zahlen.lehrkraefte} Lehrkraefte, ${zahlen.sitzungen} Sitzungen, ${zahlen.vorfaelle} Vorfaelle (${zahlen.belegt} Plaetze belegt).`);
   } else {
@@ -1902,7 +1990,7 @@ async function beenden() {
 function mandantZaehler(schulId) {
   let lehrkraefte = 0;
   for (const teacher of teachers.values()) {
-    if (teacher.schulId === schulId && teacher.online) lehrkraefte += 1;
+    if (teacher.schulId === schulId && teacher.online && !teacher.demoBetreuung) lehrkraefte += 1;
   }
   let auszeiten = 0;
   for (const vorfall of incidents) {
